@@ -22,7 +22,7 @@ Dioxus UI (Rust)
         → App Store / Play Store
 ```
 
-Native calls go through JNI and a small ObjC-visible Swift shim — not UniFFI.
+Native calls go through a thin host the app compiles in — Kotlin on Android, ObjC-visible Swift on iOS — not UniFFI.
 
 ## Ownership
 
@@ -61,13 +61,21 @@ This is **fire-and-present**: it returns once the native SDK has been asked to s
 
 ### Android app deps
 
-Add the No-Codes SDK (it pulls in Qonversion):
+1. Add the No-Codes SDK (it pulls in Qonversion):
 
 ```groovy
 dependencies {
     implementation 'io.qonversion:no-codes:1.+'
 }
 ```
+
+2. Compile [`android/DioxusQonversionHost.kt`](android/DioxusQonversionHost.kt) from this crate into your Dioxus Android target (same package: `io.dioxus.qonversion`).
+
+With Dioxus CLI 0.6, extra Kotlin is not auto-injected the way `android_main_activity` is. A reliable approach:
+
+- Add a minimal `android/MainActivity.kt` (`class MainActivity : WryActivity()`) and set `android_main_activity = "android/MainActivity.kt"` in `Dioxus.toml`.
+- Place `DioxusQonversionHost.kt` next to it under `package io.dioxus.qonversion`.
+- If `dx` only copies MainActivity into the generated app, copy the host into that app’s `src/main/kotlin` (or add a `sourceDir` overlay) so Gradle compiles it.
 
 Context is taken from `ndk_context` (initialized by Dioxus / wry).
 

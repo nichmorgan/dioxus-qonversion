@@ -12,6 +12,7 @@ categories = ["gui"]
 include = [
     "/src",
     "/ios",
+    "/android",
     "/examples",
     "/README.md",
     "/LICENSE-MIT",
