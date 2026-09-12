@@ -3,12 +3,20 @@
 //! Requires the app to depend on `io.qonversion:no-codes:1.+` (pulls in the
 //! Qonversion SDK). Context comes from `ndk_context` (initialized by Dioxus/wry).
 
-use jni::objects::{JObject, JValue};
-use jni::AttachGuard;
-use jni::JavaVM;
+use jni::objects::{JObject, JString, JValue};
+use jni::strings::JNIStr;
+use jni::{jni_sig, jni_str, Env, JavaVM};
 
 use crate::config::{Environment, InitConfig, LaunchMode};
 use crate::error::QonversionError;
+
+impl From<jni::errors::Error> for QonversionError {
+    fn from(error: jni::errors::Error) -> Self {
+        Self::Native {
+            message: error.to_string(),
+        }
+    }
+}
 
 pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     with_jni(|env, context| {
@@ -26,12 +34,12 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
                 message: format!("failed to create context key string: {e}"),
             })?;
 
-        let nocodes_class = find_class(env, "io/qonversion/nocodes/NoCodes")?;
+        let nocodes_class = find_class(env, jni_str!("io/qonversion/nocodes/NoCodes"))?;
         let shared = env
             .call_static_method(
                 &nocodes_class,
-                "getSharedInstance",
-                "()Lio/qonversion/nocodes/NoCodes;",
+                jni_str!("getSharedInstance"),
+                jni_sig!("()Lio/qonversion/nocodes/NoCodes;"),
                 &[],
             )
             .map_err(|e| map_exception(env, e, "NoCodes.getSharedInstance"))?
@@ -42,8 +50,8 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
 
         env.call_method(
             &shared,
-            "showScreen",
-            "(Ljava/lang/String;)V",
+            jni_str!("showScreen"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&key)],
         )
         .map_err(|e| map_exception(env, e, "NoCodes.showScreen"))?;
@@ -54,7 +62,7 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
 
 fn with_jni<F>(f: F) -> Result<(), QonversionError>
 where
-    F: for<'a> FnOnce(&mut AttachGuard<'a>, &JObject<'a>) -> Result<(), QonversionError>,
+    F: for<'a> FnOnce(&mut Env<'a>, &JObject<'a>) -> Result<(), QonversionError>,
 {
     let android_ctx = ndk_context::android_context();
     if android_ctx.context().is_null() || android_ctx.vm().is_null() {
@@ -63,45 +71,41 @@ where
         ));
     }
 
-    let vm = unsafe { JavaVM::from_raw(android_ctx.vm().cast()) }.map_err(|e| {
-        QonversionError::Native {
-            message: format!("failed to attach JavaVM: {e}"),
-        }
-    })?;
+    let vm = unsafe { JavaVM::from_raw(android_ctx.vm().cast()) };
 
-    let mut env = vm
-        .attach_current_thread()
-        .map_err(|e| QonversionError::Native {
-            message: format!("failed to attach JNI thread: {e}"),
-        })?;
-
-    let context = unsafe { JObject::from_raw(android_ctx.context() as jni::sys::jobject) };
-    f(&mut env, &context)
+    vm.attach_current_thread(|env| {
+        let context =
+            unsafe { JObject::from_raw(env, android_ctx.context() as jni::sys::jobject) };
+        f(env, &context)
+    })
 }
 
 fn initialize_qonversion(
-    env: &mut AttachGuard<'_>,
+    env: &mut Env<'_>,
     context: &JObject<'_>,
     config: &InitConfig,
 ) -> Result<(), QonversionError> {
     let launch_mode = match config.launch_mode {
         LaunchMode::SubscriptionManagement => enum_value(
             env,
-            "com/qonversion/android/sdk/dto/QLaunchMode",
-            "SubscriptionManagement",
+            jni_str!("com/qonversion/android/sdk/dto/QLaunchMode"),
+            jni_str!("SubscriptionManagement"),
+            jni_sig!("Lcom/qonversion/android/sdk/dto/QLaunchMode;"),
         )?,
     };
 
     let environment = match config.environment {
         Environment::Sandbox => enum_value(
             env,
-            "com/qonversion/android/sdk/dto/QEnvironment",
-            "Sandbox",
+            jni_str!("com/qonversion/android/sdk/dto/QEnvironment"),
+            jni_str!("Sandbox"),
+            jni_sig!("Lcom/qonversion/android/sdk/dto/QEnvironment;"),
         )?,
         Environment::Production => enum_value(
             env,
-            "com/qonversion/android/sdk/dto/QEnvironment",
-            "Production",
+            jni_str!("com/qonversion/android/sdk/dto/QEnvironment"),
+            jni_str!("Production"),
+            jni_sig!("Lcom/qonversion/android/sdk/dto/QEnvironment;"),
         )?,
     };
 
@@ -111,11 +115,14 @@ fn initialize_qonversion(
             message: format!("failed to create project key string: {e}"),
         })?;
 
-    let builder_class = find_class(env, "com/qonversion/android/sdk/QonversionConfig$Builder")?;
+    let builder_class =
+        find_class(env, jni_str!("com/qonversion/android/sdk/QonversionConfig$Builder"))?;
     let builder = env
         .new_object(
             &builder_class,
-            "(Landroid/content/Context;Ljava/lang/String;Lcom/qonversion/android/sdk/dto/QLaunchMode;)V",
+            jni_sig!(
+                "(Landroid/content/Context;Ljava/lang/String;Lcom/qonversion/android/sdk/dto/QLaunchMode;)V"
+            ),
             &[
                 JValue::Object(context),
                 JValue::Object(&project_key),
@@ -127,8 +134,10 @@ fn initialize_qonversion(
     let builder = env
         .call_method(
             &builder,
-            "setEnvironment",
-            "(Lcom/qonversion/android/sdk/dto/QEnvironment;)Lcom/qonversion/android/sdk/QonversionConfig$Builder;",
+            jni_str!("setEnvironment"),
+            jni_sig!(
+                "(Lcom/qonversion/android/sdk/dto/QEnvironment;)Lcom/qonversion/android/sdk/QonversionConfig$Builder;"
+            ),
             &[JValue::Object(&environment)],
         )
         .map_err(|e| map_exception(env, e, "setEnvironment"))?
@@ -140,8 +149,8 @@ fn initialize_qonversion(
     let qonversion_config = env
         .call_method(
             &builder,
-            "build",
-            "()Lcom/qonversion/android/sdk/QonversionConfig;",
+            jni_str!("build"),
+            jni_sig!("()Lcom/qonversion/android/sdk/QonversionConfig;"),
             &[],
         )
         .map_err(|e| map_exception(env, e, "QonversionConfig.build"))?
@@ -150,11 +159,13 @@ fn initialize_qonversion(
             message: format!("build returned unexpected type: {e}"),
         })?;
 
-    let qonversion_class = find_class(env, "com/qonversion/android/sdk/Qonversion")?;
+    let qonversion_class = find_class(env, jni_str!("com/qonversion/android/sdk/Qonversion"))?;
     env.call_static_method(
         &qonversion_class,
-        "initialize",
-        "(Lcom/qonversion/android/sdk/QonversionConfig;)Lcom/qonversion/android/sdk/Qonversion;",
+        jni_str!("initialize"),
+        jni_sig!(
+            "(Lcom/qonversion/android/sdk/QonversionConfig;)Lcom/qonversion/android/sdk/Qonversion;"
+        ),
         &[JValue::Object(&qonversion_config)],
     )
     .map_err(|e| map_exception(env, e, "Qonversion.initialize"))?;
@@ -163,7 +174,7 @@ fn initialize_qonversion(
 }
 
 fn initialize_nocodes(
-    env: &mut AttachGuard<'_>,
+    env: &mut Env<'_>,
     context: &JObject<'_>,
     project_key: &str,
 ) -> Result<(), QonversionError> {
@@ -173,11 +184,11 @@ fn initialize_nocodes(
             message: format!("failed to create project key string: {e}"),
         })?;
 
-    let builder_class = find_class(env, "io/qonversion/nocodes/NoCodesConfig$Builder")?;
+    let builder_class = find_class(env, jni_str!("io/qonversion/nocodes/NoCodesConfig$Builder"))?;
     let builder = env
         .new_object(
             &builder_class,
-            "(Landroid/content/Context;Ljava/lang/String;)V",
+            jni_sig!("(Landroid/content/Context;Ljava/lang/String;)V"),
             &[JValue::Object(context), JValue::Object(&project_key)],
         )
         .map_err(|e| map_exception(env, e, "NoCodesConfig.Builder"))?;
@@ -185,8 +196,8 @@ fn initialize_nocodes(
     let nocodes_config = env
         .call_method(
             &builder,
-            "build",
-            "()Lio/qonversion/nocodes/NoCodesConfig;",
+            jni_str!("build"),
+            jni_sig!("()Lio/qonversion/nocodes/NoCodesConfig;"),
             &[],
         )
         .map_err(|e| map_exception(env, e, "NoCodesConfig.build"))?
@@ -195,11 +206,11 @@ fn initialize_nocodes(
             message: format!("NoCodesConfig.build returned unexpected type: {e}"),
         })?;
 
-    let nocodes_class = find_class(env, "io/qonversion/nocodes/NoCodes")?;
+    let nocodes_class = find_class(env, jni_str!("io/qonversion/nocodes/NoCodes"))?;
     env.call_static_method(
         &nocodes_class,
-        "initialize",
-        "(Lio/qonversion/nocodes/NoCodesConfig;)Lio/qonversion/nocodes/NoCodes;",
+        jni_str!("initialize"),
+        jni_sig!("(Lio/qonversion/nocodes/NoCodesConfig;)Lio/qonversion/nocodes/NoCodes;"),
         &[JValue::Object(&nocodes_config)],
     )
     .map_err(|e| map_exception(env, e, "NoCodes.initialize"))?;
@@ -208,48 +219,49 @@ fn initialize_nocodes(
 }
 
 fn find_class<'a>(
-    env: &mut AttachGuard<'a>,
-    name: &str,
+    env: &mut Env<'a>,
+    name: &JNIStr,
 ) -> Result<jni::objects::JClass<'a>, QonversionError> {
     match env.find_class(name) {
         Ok(class) => Ok(class),
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             Err(QonversionError::HostMissing(format!(
-                "JNI class `{name}` not found ({e}). Add `implementation 'io.qonversion:no-codes:1.+'` to the Android app."
+                "JNI class `{}` not found ({e}). Add `implementation 'io.qonversion:no-codes:1.+'` to the Android app.",
+                name.to_str()
             )))
         }
     }
 }
 
 fn enum_value<'a>(
-    env: &mut AttachGuard<'a>,
-    class_name: &str,
-    field: &str,
+    env: &mut Env<'a>,
+    class_name: &JNIStr,
+    field: &JNIStr,
+    sig: impl AsRef<jni::signature::FieldSignature<'static>>,
 ) -> Result<JObject<'a>, QonversionError> {
     let class = find_class(env, class_name)?;
-    let sig = format!("L{class_name};");
-    env.get_static_field(&class, field, &sig)
+    env.get_static_field(&class, field, sig)
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             QonversionError::HostMissing(format!(
-                "enum field `{class_name}.{field}` not found ({e})"
+                "enum field `{}` not found ({e})",
+                field.to_str()
             ))
         })?
         .l()
         .map_err(|e| QonversionError::Native {
-            message: format!("enum field `{class_name}.{field}` was not an object: {e}"),
+            message: format!(
+                "enum field `{}` was not an object: {e}",
+                field.to_str()
+            ),
         })
 }
 
-fn map_exception(
-    env: &mut AttachGuard<'_>,
-    err: jni::errors::Error,
-    what: &str,
-) -> QonversionError {
-    if let Ok(true) = env.exception_check() {
+fn map_exception(env: &mut Env<'_>, err: jni::errors::Error, what: &str) -> QonversionError {
+    if env.exception_check() {
         let message = describe_exception(env).unwrap_or_else(|| err.to_string());
-        let _ = env.exception_clear();
+        env.exception_clear();
         return QonversionError::Native {
             message: format!("{what}: {message}"),
         };
@@ -259,14 +271,19 @@ fn map_exception(
     }
 }
 
-fn describe_exception(env: &mut AttachGuard<'_>) -> Option<String> {
-    let throwable = env.exception_occurred().ok()?;
-    let _ = env.exception_clear();
+fn describe_exception(env: &mut Env<'_>) -> Option<String> {
+    let throwable = env.exception_occurred()?;
+    env.exception_clear();
     let message = env
-        .call_method(throwable, "toString", "()Ljava/lang/String;", &[])
+        .call_method(
+            &throwable,
+            jni_str!("toString"),
+            jni_sig!("()Ljava/lang/String;"),
+            &[],
+        )
         .ok()?
         .l()
         .ok()?;
-    let jstr = env.get_string((&message).into()).ok()?;
-    Some(jstr.into())
+    let jstring = env.cast_local::<JString>(message).ok()?;
+    jstring.try_to_string(env).ok()
 }
