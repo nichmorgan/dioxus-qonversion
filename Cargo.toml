@@ -9,9 +9,29 @@ homepage = "https://github.com/nichmorgan/dioxus-qonversion"
 repository = "https://github.com/nichmorgan/dioxus-qonversion"
 keywords = ["dioxus", "qonversion", "subscriptions", "mobile"]
 categories = ["gui"]
+include = [
+    "/src",
+    "/ios",
+    "/examples",
+    "/README.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+]
 
 [dependencies]
-dioxus-lib = { version = "0.6", default-features = false, features = ["macro", "hooks", "signals"] }
+dioxus-lib = { version = "0.6", default-features = false, features = [
+    "macro",
+    "hooks",
+    "signals",
+] }
+thiserror = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22.4"
+ndk-context = "0.1"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc = "0.2"
 
 [dev-dependencies]
-dioxus = { version = "0.6", features = ["desktop"] }
+dioxus = { version = "0.7.10", features = ["desktop"] }
