@@ -1,12 +1,13 @@
 [package]
-name = "dioxus-library-template"
-version = "0.2.0"
+name = "dioxus-qonversion"
+version = "0.1.0"
 edition = "2021"
-description = "Library for Dioxus 🧬"
+description = "Unofficial Qonversion primitives for Dioxus mobile"
+license = "MIT OR Apache-2.0"
 readme = "./README.md"
-homepage = "https://github.com/dioxus-community/dioxus-library-template"
-repository = "https://github.com/dioxus-community/dioxus-library-template"
-keywords = ["dioxus"]
+homepage = "https://github.com/nichmorgan/dioxus-qonversion"
+repository = "https://github.com/nichmorgan/dioxus-qonversion"
+keywords = ["dioxus", "qonversion", "subscriptions", "mobile"]
 categories = ["gui"]
 
 [dependencies]

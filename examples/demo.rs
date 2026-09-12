@@ -1,19 +1,17 @@
 use dioxus::prelude::*;
-use dioxus_library_template::prelude::*;
+use dioxus_qonversion as _;
 
 fn main() {
     launch(app);
 }
 
 fn app() -> Element {
-    let msg = use_dioxus();
-
     rsx!(
         div {
             display: "flex",
             justify_content: "center",
             h3 {
-                "{msg}"
+                "dioxus-qonversion — unofficial Qonversion bridge for Dioxus mobile"
             }
         }
     )
