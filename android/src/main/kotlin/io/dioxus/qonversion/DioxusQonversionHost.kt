@@ -16,8 +16,8 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Thin Kotlin host so Rust can call Qonversion + No-Codes via JNI.
  *
- * Compile this file into your Dioxus Android target and add:
- * `implementation("io.qonversion:no-codes:1.+")`
+ * Bundled automatically by Dioxus CLI 0.7+ via manganis Android plugin metadata.
+ * This Gradle library module already depends on `io.qonversion:no-codes`.
  */
 object DioxusQonversionHost {
     /**

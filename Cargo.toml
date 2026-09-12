@@ -29,6 +29,7 @@ thiserror = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
+manganis = "0.7.10"
 ndk-context = "0.1"
 
 [target.'cfg(target_os = "ios")'.dependencies]

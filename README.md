@@ -22,7 +22,7 @@ Dioxus UI (Rust)
         → App Store / Play Store
 ```
 
-Native calls go through a thin host the app compiles in — Kotlin on Android, ObjC-visible Swift on iOS — not UniFFI.
+Native calls go through a thin host — Kotlin on Android (auto-bundled by Dioxus CLI 0.7+), ObjC-visible Swift on iOS — not UniFFI.
 
 ## Ownership
 
@@ -59,25 +59,15 @@ show_screen("your_context_key")?;
 
 This is **fire-and-present**: it returns once the native SDK has been asked to show the screen, not when the user dismisses it. Finished / failed-to-load callbacks come in a later milestone.
 
-### Android app deps
+### Android (Dioxus CLI 0.7+)
 
-1. Add the No-Codes SDK (it pulls in Qonversion):
-
-```groovy
-dependencies {
-    implementation 'io.qonversion:no-codes:1.+'
-}
-```
-
-2. Compile [`android/DioxusQonversionHost.kt`](android/DioxusQonversionHost.kt) from this crate into your Dioxus Android target (same package: `io.dioxus.qonversion`).
-
-With Dioxus CLI 0.6, extra Kotlin is not auto-injected the way `android_main_activity` is. A reliable approach:
-
-- Add a minimal `android/MainActivity.kt` (`class MainActivity : WryActivity()`) and set `android_main_activity = "android/MainActivity.kt"` in `Dioxus.toml`.
-- Place `DioxusQonversionHost.kt` next to it under `package io.dioxus.qonversion`.
-- If `dx` only copies MainActivity into the generated app, copy the host into that app’s `src/main/kotlin` (or add a `sourceDir` overlay) so Gradle compiles it.
+1. Depend on this crate (`cargo add dioxus-qonversion` / git path).
+2. Build with **Dioxus CLI 0.7+** (`dx`). The crate ships a Gradle library under [`android/`](android/) and emits manganis Android artifact metadata so `dx` embeds the Kotlin host automatically — **no copy/paste of Kotlin**.
+3. The plugin module already depends on `io.qonversion:no-codes`. You may still list it in `Dioxus.toml` `gradle_dependencies` if you want an explicit app-level pin; it is not required for the host class itself.
 
 Context is taken from `ndk_context` (initialized by Dioxus / wry).
+
+**Fallback (non-`dx` / older CLI):** compile [`android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt`](android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt) into your Android target and add `implementation("io.qonversion:no-codes:1.+")`. Same idea as the iOS Swift host note below — not the happy path.
 
 ### iOS app deps
 
