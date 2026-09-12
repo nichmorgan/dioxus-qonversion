@@ -69,9 +69,11 @@ where
         }
     })?;
 
-    let mut env = vm.attach_current_thread().map_err(|e| QonversionError::Native {
-        message: format!("failed to attach JNI thread: {e}"),
-    })?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| QonversionError::Native {
+            message: format!("failed to attach JNI thread: {e}"),
+        })?;
 
     let context = unsafe { JObject::from_raw(android_ctx.context() as jni::sys::jobject) };
     f(&mut env, &context)
@@ -91,12 +93,16 @@ fn initialize_qonversion(
     };
 
     let environment = match config.environment {
-        Environment::Sandbox => {
-            enum_value(env, "com/qonversion/android/sdk/dto/QEnvironment", "Sandbox")?
-        }
-        Environment::Production => {
-            enum_value(env, "com/qonversion/android/sdk/dto/QEnvironment", "Production")?
-        }
+        Environment::Sandbox => enum_value(
+            env,
+            "com/qonversion/android/sdk/dto/QEnvironment",
+            "Sandbox",
+        )?,
+        Environment::Production => enum_value(
+            env,
+            "com/qonversion/android/sdk/dto/QEnvironment",
+            "Production",
+        )?,
     };
 
     let project_key = env
