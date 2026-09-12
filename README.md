@@ -17,7 +17,7 @@ Early — the public API is not stable yet. See the [roadmap](https://github.com
 ```text
 Dioxus UI (Rust)
   → dioxus-qonversion (Rust API)
-    → JNI (Android) / ObjC (iOS)
+    → Kotlin host (Android) / Swift host (iOS)
       → Qonversion SDK + No-Codes SDK
         → App Store / Play Store
 ```
