@@ -13,6 +13,15 @@ pub fn is_initialized() -> bool {
     INITIALIZED.load(Ordering::Acquire)
 }
 
+/// Ensure [`initialize`] has succeeded before calling another primitive.
+pub(crate) fn require_initialized() -> Result<(), QonversionError> {
+    if is_initialized() {
+        Ok(())
+    } else {
+        Err(QonversionError::NotInitialized)
+    }
+}
+
 /// Initialize Qonversion (Subscription Management Mode) and No-Codes once.
 ///
 /// Must succeed before any other library call. The project key is supplied by

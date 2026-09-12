@@ -5,6 +5,8 @@ use crate::error::QonversionError;
 
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "android")]
+mod android_plugin;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -23,5 +25,21 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         unsupported::initialize(config)
+    }
+}
+
+/// Present a No-Codes screen by context key on the current platform.
+pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
+    #[cfg(target_os = "android")]
+    {
+        android::show_screen(context_key)
+    }
+    #[cfg(target_os = "ios")]
+    {
+        ios::show_screen(context_key)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        unsupported::show_screen(context_key)
     }
 }

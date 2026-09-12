@@ -22,7 +22,7 @@ Dioxus UI (Rust)
         → App Store / Play Store
 ```
 
-Native calls go through JNI and a small ObjC-visible Swift shim — not UniFFI.
+Native calls go through a thin host — Kotlin on Android (auto-bundled by Dioxus CLI 0.7+), ObjC-visible Swift on iOS — not UniFFI.
 
 ## Ownership
 
@@ -47,17 +47,27 @@ initialize(InitConfig {
 
 Double-init returns a typed error. Desktop / web builds return `UnsupportedPlatform`.
 
-### Android app deps
+## Present a No-Codes screen
 
-Add the No-Codes SDK (it pulls in Qonversion):
+After init, present any published screen by its **context key** (from the Qonversion dashboard). The key is always an app parameter — this crate never hardcodes screen names.
 
-```groovy
-dependencies {
-    implementation 'io.qonversion:no-codes:1.+'
-}
+```rust
+use dioxus_qonversion::show_screen;
+
+show_screen("your_context_key")?;
 ```
 
+This is **fire-and-present**: it returns once the native SDK has been asked to show the screen, not when the user dismisses it. Finished / failed-to-load callbacks come in a later milestone.
+
+### Android (Dioxus CLI 0.7+)
+
+1. Depend on this crate (`cargo add dioxus-qonversion` / git path).
+2. Build with **Dioxus CLI 0.7+** (`dx`). The crate ships a Gradle library under [`android/`](android/) and emits manganis Android artifact metadata so `dx` embeds the Kotlin host automatically — **no copy/paste of Kotlin**.
+3. The plugin module already depends on `io.qonversion:no-codes`. You may still list it in `Dioxus.toml` `gradle_dependencies` if you want an explicit app-level pin; it is not required for the host class itself.
+
 Context is taken from `ndk_context` (initialized by Dioxus / wry).
+
+**Fallback (non-`dx` / older CLI):** compile [`android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt`](android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt) into your Android target and add `implementation("io.qonversion:no-codes:1.+")`. Same idea as the iOS Swift host note below — not the happy path.
 
 ### iOS app deps
 
