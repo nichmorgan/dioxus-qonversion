@@ -12,15 +12,18 @@ mod config;
 mod error;
 mod init;
 mod native;
+mod screen;
 
 pub use config::{Environment, InitConfig, LaunchMode};
 pub use error::QonversionError;
 pub use init::{initialize, is_initialized};
+pub use screen::show_screen;
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        initialize, is_initialized, Environment, InitConfig, LaunchMode, QonversionError,
+        initialize, is_initialized, show_screen, Environment, InitConfig, LaunchMode,
+        QonversionError,
     };
 }
 
@@ -65,5 +68,28 @@ mod tests {
         })
         .expect_err("second init must fail");
         assert_eq!(err, QonversionError::AlreadyInitialized);
+    }
+
+    #[test]
+    fn show_screen_rejects_empty_context_key() {
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = show_screen("  ").expect_err("empty context key must fail");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn show_screen_requires_init() {
+        init::reset_initialized_for_test();
+        let err = show_screen("paywall").expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn show_screen_unsupported_on_non_mobile() {
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = show_screen("paywall").expect_err("desktop/web must fail");
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
     }
 }

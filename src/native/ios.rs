@@ -14,12 +14,7 @@ use crate::config::{Environment, InitConfig};
 use crate::error::QonversionError;
 
 pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
-    let host = Class::get("DioxusQonversionHost").ok_or_else(|| {
-        QonversionError::HostMissing(
-            "DioxusQonversionHost not found. Compile ios/DioxusQonversionHost.swift into the iOS app and link the Qonversion SDK (≥ 6.13.0).".into(),
-        )
-    })?;
-
+    let host = host_class()?;
     let project_key = nsstring(&config.project_key)?;
     let sandbox = matches!(config.environment, Environment::Sandbox);
 
@@ -31,6 +26,27 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
         ]
     };
 
+    map_host_result(err)
+}
+
+pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
+    let host = host_class()?;
+    let key = nsstring(context_key)?;
+
+    let err: *mut Object = unsafe { msg_send![host, showScreenWithContextKey: key] };
+
+    map_host_result(err)
+}
+
+fn host_class() -> Result<&'static Class, QonversionError> {
+    Class::get("DioxusQonversionHost").ok_or_else(|| {
+        QonversionError::HostMissing(
+            "DioxusQonversionHost not found. Compile ios/DioxusQonversionHost.swift into the iOS app and link the Qonversion SDK (≥ 6.13.0).".into(),
+        )
+    })
+}
+
+fn map_host_result(err: *mut Object) -> Result<(), QonversionError> {
     if err.is_null() {
         Ok(())
     } else {
@@ -52,7 +68,7 @@ fn nsstring(s: &str) -> Result<*mut Object, QonversionError> {
     };
     if ns_string.is_null() {
         Err(QonversionError::Native {
-            message: "failed to allocate NSString for project key".into(),
+            message: "failed to allocate NSString".into(),
         })
     } else {
         Ok(ns_string)

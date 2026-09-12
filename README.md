@@ -47,6 +47,18 @@ initialize(InitConfig {
 
 Double-init returns a typed error. Desktop / web builds return `UnsupportedPlatform`.
 
+## Present a No-Codes screen
+
+After init, present any published screen by its **context key** (from the Qonversion dashboard). The key is always an app parameter — this crate never hardcodes screen names.
+
+```rust
+use dioxus_qonversion::show_screen;
+
+show_screen("your_context_key")?;
+```
+
+This is **fire-and-present**: it returns once the native SDK has been asked to show the screen, not when the user dismisses it. Finished / failed-to-load callbacks come in a later milestone.
+
 ### Android app deps
 
 Add the No-Codes SDK (it pulls in Qonversion):

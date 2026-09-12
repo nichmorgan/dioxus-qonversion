@@ -4,12 +4,58 @@
 //! Qonversion SDK). Context comes from `ndk_context` (initialized by Dioxus/wry).
 
 use jni::objects::{JObject, JValue};
+use jni::AttachGuard;
 use jni::JavaVM;
 
 use crate::config::{Environment, InitConfig, LaunchMode};
 use crate::error::QonversionError;
 
 pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
+    with_jni(|env, context| {
+        initialize_qonversion(env, context, config)?;
+        initialize_nocodes(env, context, &config.project_key)?;
+        Ok(())
+    })
+}
+
+pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
+    with_jni(|env, _context| {
+        let key = env
+            .new_string(context_key)
+            .map_err(|e| QonversionError::Native {
+                message: format!("failed to create context key string: {e}"),
+            })?;
+
+        let nocodes_class = find_class(env, "io/qonversion/nocodes/NoCodes")?;
+        let shared = env
+            .call_static_method(
+                &nocodes_class,
+                "getSharedInstance",
+                "()Lio/qonversion/nocodes/NoCodes;",
+                &[],
+            )
+            .map_err(|e| map_exception(env, e, "NoCodes.getSharedInstance"))?
+            .l()
+            .map_err(|e| QonversionError::Native {
+                message: format!("getSharedInstance returned unexpected type: {e}"),
+            })?;
+
+        env.call_method(
+            &shared,
+            "showScreen",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&key)],
+        )
+        .map_err(|e| map_exception(env, e, "NoCodes.showScreen"))?;
+
+        Ok(())
+    })
+}
+
+fn with_jni<F>(f: F) -> Result<(), QonversionError>
+where
+    F: for<'a> FnOnce(&mut AttachGuard<'a>, &JObject<'a>) -> Result<(), QonversionError>,
+{
     let android_ctx = ndk_context::android_context();
     if android_ctx.context().is_null() || android_ctx.vm().is_null() {
         return Err(QonversionError::HostMissing(
@@ -28,15 +74,11 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     })?;
 
     let context = unsafe { JObject::from_raw(android_ctx.context() as jni::sys::jobject) };
-
-    initialize_qonversion(&mut env, &context, config)?;
-    initialize_nocodes(&mut env, &context, &config.project_key)?;
-
-    Ok(())
+    f(&mut env, &context)
 }
 
 fn initialize_qonversion(
-    env: &mut jni::AttachGuard<'_>,
+    env: &mut AttachGuard<'_>,
     context: &JObject<'_>,
     config: &InitConfig,
 ) -> Result<(), QonversionError> {
@@ -115,7 +157,7 @@ fn initialize_qonversion(
 }
 
 fn initialize_nocodes(
-    env: &mut jni::AttachGuard<'_>,
+    env: &mut AttachGuard<'_>,
     context: &JObject<'_>,
     project_key: &str,
 ) -> Result<(), QonversionError> {
@@ -160,7 +202,7 @@ fn initialize_nocodes(
 }
 
 fn find_class<'a>(
-    env: &mut jni::AttachGuard<'a>,
+    env: &mut AttachGuard<'a>,
     name: &str,
 ) -> Result<jni::objects::JClass<'a>, QonversionError> {
     match env.find_class(name) {
@@ -175,7 +217,7 @@ fn find_class<'a>(
 }
 
 fn enum_value<'a>(
-    env: &mut jni::AttachGuard<'a>,
+    env: &mut AttachGuard<'a>,
     class_name: &str,
     field: &str,
 ) -> Result<JObject<'a>, QonversionError> {
@@ -195,7 +237,7 @@ fn enum_value<'a>(
 }
 
 fn map_exception(
-    env: &mut jni::AttachGuard<'_>,
+    env: &mut AttachGuard<'_>,
     err: jni::errors::Error,
     what: &str,
 ) -> QonversionError {
@@ -211,7 +253,7 @@ fn map_exception(
     }
 }
 
-fn describe_exception(env: &mut jni::AttachGuard<'_>) -> Option<String> {
+fn describe_exception(env: &mut AttachGuard<'_>) -> Option<String> {
     let throwable = env.exception_occurred().ok()?;
     let _ = env.exception_clear();
     let message = env
