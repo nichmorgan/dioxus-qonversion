@@ -34,9 +34,11 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     vm.attach_current_thread(|env| {
         let context = unsafe { JObject::from_raw(env, context_raw) };
         let host = find_host_class(env, &context)?;
-        let key = env.new_string(&project_key).map_err(|e| QonversionError::Native {
-            message: format!("failed to create project key string: {e}"),
-        })?;
+        let key = env
+            .new_string(&project_key)
+            .map_err(|e| QonversionError::Native {
+                message: format!("failed to create project key string: {e}"),
+            })?;
 
         let err = env
             .call_static_method(
@@ -64,9 +66,11 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
         let context = unsafe { JObject::from_raw(env, context_raw) };
         let activity = as_activity(env, &context)?;
         let host = find_host_class(env, &context)?;
-        let key = env.new_string(&context_key).map_err(|e| QonversionError::Native {
-            message: format!("failed to create context key string: {e}"),
-        })?;
+        let key = env
+            .new_string(&context_key)
+            .map_err(|e| QonversionError::Native {
+                message: format!("failed to create context key string: {e}"),
+            })?;
 
         let err = env
             .call_static_method(
@@ -124,9 +128,10 @@ fn find_host_class<'a>(
                 .map_err(|e| QonversionError::Native {
                     message: format!("loadClass returned unexpected type: {e}"),
                 })?;
-            env.cast_local::<JClass>(class).map_err(|e| QonversionError::Native {
-                message: format!("failed to cast loaded host class: {e}"),
-            })
+            env.cast_local::<JClass>(class)
+                .map_err(|e| QonversionError::Native {
+                    message: format!("failed to cast loaded host class: {e}"),
+                })
         }
     }
 }
@@ -175,10 +180,14 @@ fn map_host_result(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), Qonversion
     if err.is_null() {
         return Ok(());
     }
-    let jstring = env.cast_local::<JString>(err).map_err(|e| QonversionError::Native {
-        message: format!("host error was not a String: {e}"),
-    })?;
-    let message = jstring.try_to_string(env).unwrap_or_else(|_| "unknown native error".into());
+    let jstring = env
+        .cast_local::<JString>(err)
+        .map_err(|e| QonversionError::Native {
+            message: format!("host error was not a String: {e}"),
+        })?;
+    let message = jstring
+        .try_to_string(env)
+        .unwrap_or_else(|_| "unknown native error".into());
     Err(QonversionError::Native { message })
 }
 
