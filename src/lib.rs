@@ -1,5 +1,7 @@
-pub mod hooks;
+//! Unofficial Qonversion primitives for Dioxus mobile.
+//!
+//! Mobile only for now (iOS and Android). The public API is not stable yet.
 
-pub mod prelude {
-    pub use crate::hooks::*;
-}
+#![allow(dead_code)]
+
+pub mod prelude {}
