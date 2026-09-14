@@ -83,6 +83,46 @@ public class DioxusQonversionHost: NSObject {
         return errorMessage
     }
 
+    /// Fetch Remote Config for `contextKey`, or the empty context key when `contextKey` is nil/blank.
+    ///
+    /// Posts to the main queue and **waits** on the calling thread for the SDK completion.
+    /// Must not be invoked on the main thread (deadlock). The Rust serial worker always
+    /// calls this off-main.
+    ///
+    /// - Returns: JSON envelope string (`ok:true` + payload, or `ok:false` + error). Never nil.
+    @objc(remoteConfigWithContextKey:)
+    public static func remoteConfig(contextKey: String?) -> String {
+        if Thread.isMainThread {
+            return encodeRemoteConfigError("remote_config must not be called on the main thread")
+        }
+
+        let trimmed = contextKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = (trimmed?.isEmpty == false) ? trimmed : nil
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var envelope = encodeRemoteConfigError("remote config did not complete")
+        DispatchQueue.main.async {
+            let handler: (Qonversion.RemoteConfig?, Error?) -> Void = { config, error in
+                if let error {
+                    envelope = encodeRemoteConfigError(error.localizedDescription)
+                } else if let config {
+                    envelope = encodeRemoteConfigSuccess(config)
+                } else {
+                    envelope = encodeRemoteConfigError("remote config returned no data")
+                }
+                semaphore.signal()
+            }
+            if let key {
+                Qonversion.shared().remoteConfig(contextKey: key, completion: handler)
+            } else {
+                // No NS_SWIFT_NAME on the empty-key overload: first argument is unlabeled.
+                Qonversion.shared().remoteConfig(handler)
+            }
+        }
+        semaphore.wait()
+        return envelope
+    }
+
     /// Clear the Qonversion user session.
     ///
     /// Hops to the main queue and **waits**.
@@ -108,5 +148,91 @@ public class DioxusQonversionHost: NSObject {
         }
         semaphore.wait()
         return result
+    }
+
+    private static func encodeRemoteConfigSuccess(_ config: Qonversion.RemoteConfig) -> String {
+        var dict: [String: Any] = ["ok": true]
+        if let payload = config.payload, JSONSerialization.isValidJSONObject(payload) {
+            dict["payload"] = payload
+        } else {
+            dict["payload"] = [:]
+        }
+        dict["source"] = encodeSource(config.source)
+        if let experiment = config.experiment {
+            dict["experiment"] = encodeExperiment(experiment)
+        } else {
+            dict["experiment"] = NSNull()
+        }
+        return stringifyEnvelope(dict)
+    }
+
+    private static func encodeRemoteConfigError(_ message: String) -> String {
+        stringifyEnvelope(["ok": false, "error": message])
+    }
+
+    private static func encodeSource(_ source: Qonversion.RemoteConfigurationSource) -> [String: Any] {
+        let contextKey: Any
+        if let key = source.contextKey, !key.isEmpty {
+            contextKey = key
+        } else {
+            contextKey = NSNull()
+        }
+        return [
+            "id": source.identifier,
+            "name": source.name,
+            "assignment_type": assignmentTypeString(source.assignmentType),
+            "type": sourceTypeString(source.type),
+            "context_key": contextKey,
+        ]
+    }
+
+    private static func encodeExperiment(_ experiment: Qonversion.Experiment) -> [String: Any] {
+        [
+            "id": experiment.identifier,
+            "name": experiment.name,
+            "group": [
+                "id": experiment.group.identifier,
+                "name": experiment.group.name,
+                "type": groupTypeString(experiment.group.type),
+            ],
+        ]
+    }
+
+    private static func sourceTypeString(_ type: Qonversion.RemoteConfigurationSourceType) -> String {
+        switch type {
+        case .remoteConfiguration: return "remote_configuration"
+        case .experimentControlGroup: return "experiment_control_group"
+        case .experimentTreatmentGroup: return "experiment_treatment_group"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func assignmentTypeString(_ type: Qonversion.RemoteConfigurationAssignmentType) -> String {
+        switch type {
+        case .auto: return "auto"
+        case .manual: return "manual"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func groupTypeString(_ type: Qonversion.ExperimentGroupType) -> String {
+        switch type {
+        case .control: return "control"
+        case .treatment: return "treatment"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func stringifyEnvelope(_ dict: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(dict),
+              let data = try? JSONSerialization.data(withJSONObject: dict),
+              let string = String(data: data, encoding: .utf8)
+        else {
+            return #"{"ok":false,"error":"failed to serialize remote config"}"#
+        }
+        return string
     }
 }

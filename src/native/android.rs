@@ -134,6 +134,40 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
     })
 }
 
+pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+    let context_key = context_key.map(str::to_string);
+
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+        let null_key = JObject::null();
+        let key;
+        let key_arg = if let Some(ref context_key) = context_key {
+            key = env
+                .new_string(context_key)
+                .map_err(|e| QonversionError::Native {
+                    message: format!("failed to create context key string: {e}"),
+                })?;
+            JValue::Object(&key)
+        } else {
+            JValue::Object(&null_key)
+        };
+
+        let envelope = env
+            .call_static_method(
+                &host,
+                jni_str!("remoteConfig"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+                &[key_arg],
+            )
+            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.remoteConfig"))?
+            .l()?;
+
+        required_jstring(env, envelope, "DioxusQonversionHost.remoteConfig")
+    })
+}
+
 fn java_vm_and_context() -> Result<(JavaVM, jobject), QonversionError> {
     let android_ctx = std::panic::catch_unwind(ndk_context::android_context)
         .ok()
@@ -239,6 +273,28 @@ fn map_host_result(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), Qonversion
         .try_to_string(env)
         .unwrap_or_else(|_| "unknown native error".into());
     Err(QonversionError::Native { message })
+}
+
+fn required_jstring(
+    env: &mut Env<'_>,
+    obj: JObject<'_>,
+    what: &str,
+) -> Result<String, QonversionError> {
+    if obj.is_null() {
+        return Err(QonversionError::Native {
+            message: format!("{what} returned null"),
+        });
+    }
+    let jstring = env
+        .cast_local::<JString>(obj)
+        .map_err(|e| QonversionError::Native {
+            message: format!("{what} did not return a String: {e}"),
+        })?;
+    jstring
+        .try_to_string(env)
+        .map_err(|e| QonversionError::Native {
+            message: format!("failed to read {what} string: {e}"),
+        })
 }
 
 fn map_exception(env: &mut Env<'_>, err: jni::errors::Error, what: &str) -> QonversionError {

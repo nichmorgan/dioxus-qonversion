@@ -21,8 +21,7 @@ pub const DEFAULT_SDK_TIMEOUT: Duration = Duration::from_secs(8);
 static SDK_TIMEOUT: Mutex<Duration> = Mutex::new(DEFAULT_SDK_TIMEOUT);
 
 struct Job {
-    work: Box<dyn FnOnce() -> Result<(), QonversionError> + Send + 'static>,
-    reply: mpsc::Sender<Result<(), QonversionError>>,
+    work: Box<dyn FnOnce() + Send + 'static>,
 }
 
 static JOB_TX: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
@@ -49,15 +48,7 @@ fn job_sender() -> mpsc::Sender<Job> {
                 .name("dioxus-qonversion-sdk".into())
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
-                        let result = panic::catch_unwind(AssertUnwindSafe(|| (job.work)()))
-                            .unwrap_or_else(|_| {
-                                Err(QonversionError::Native {
-                                    message: "Qonversion SDK worker panicked".into(),
-                                })
-                            });
-                        // Caller may have timed out and dropped the receiver —
-                        // that is intentional; native work still completed.
-                        let _ = job.reply.send(result);
+                        (job.work)();
                     }
                 })
                 .expect("failed to spawn dioxus-qonversion SDK worker");
@@ -71,16 +62,25 @@ fn job_sender() -> mpsc::Sender<Job> {
 /// Waits up to [`sdk_timeout`] for a result. On timeout returns
 /// [`QonversionError::Timeout`] without cancelling `work`; the worker keeps
 /// the slot until `work` returns so later queued calls do not overlap.
-pub(crate) fn run_serial<F>(work: F) -> Result<(), QonversionError>
+pub(crate) fn run_serial<T, F>(work: F) -> Result<T, QonversionError>
 where
-    F: FnOnce() -> Result<(), QonversionError> + Send + 'static,
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, QonversionError> + Send + 'static,
 {
     let timeout = sdk_timeout();
     let (reply_tx, reply_rx) = mpsc::channel();
     job_sender()
         .send(Job {
-            work: Box::new(work),
-            reply: reply_tx,
+            work: Box::new(move || {
+                let result = panic::catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|_| {
+                    Err(QonversionError::Native {
+                        message: "Qonversion SDK worker panicked".into(),
+                    })
+                });
+                // Caller may have timed out and dropped the receiver —
+                // that is intentional; native work still completed.
+                let _ = reply_tx.send(result);
+            }),
         })
         .map_err(|_| QonversionError::Native {
             message: "Qonversion SDK queue is closed".into(),
@@ -174,5 +174,14 @@ mod tests {
         b.join().unwrap().expect("job b");
 
         assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn run_serial_returns_value() {
+        let _guard = test_lock();
+        let _restore = RestoreSdkTimeout;
+        set_sdk_timeout(Duration::from_secs(5));
+        let value = run_serial(|| Ok(42)).expect("value");
+        assert_eq!(value, 42);
     }
 }

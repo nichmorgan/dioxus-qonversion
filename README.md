@@ -61,9 +61,26 @@ identify(firebase_uid)?;
 logout()?;
 ```
 
-Both go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker still finishes before the next queued call. `show_screen` stays fire-and-present and is **not** on this queue.
+Both `identify` / `logout` and Remote Config go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker still finishes before the next queued call. `show_screen` stays fire-and-present and is **not** on this queue.
 
 If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library also does not memoize Remote Config; clear any app-side caches yourself after `logout`.
+
+## Remote Config
+
+After init, fetch the JSON payload for any dashboard **context key**. Field names inside the payload stay app-owned — this crate does not interpret them.
+
+```rust
+use dioxus_qonversion::{remote_config, remote_config_default};
+
+// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
+let config = remote_config("your_context_key")?;
+let payload = &config.payload;
+
+// Empty dashboard context key (SDK default overload):
+let default = remote_config_default()?;
+```
+
+Same **serial SDK queue** and **8s** timeout as `identify` / `logout`. An empty payload map is success; SDK failures are `QonversionError::Native` or `Timeout`. `source` and `experiment` are present when the SDK assigned this payload from a remote config or A/B experiment.
 
 ## Present a No-Codes screen
 
