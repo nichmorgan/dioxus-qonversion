@@ -1,0 +1,60 @@
+name: Test
+
+on:
+  pull_request:
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android (cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-aarch64-linux-android
+
+      - name: Test android
+        uses: ClementTsang/cargo-action@v0.0.7
+        with:
+          command: test
+          args: --lib --target aarch64-linux-android
+          use-cross: true
+          cross-version: main
+
+  ios:
+    name: iOS (simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-aarch64-apple-ios-sim
+
+      - name: Boot iOS Simulator
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -E -o "[0-9A-F-]{36}")
+          xcrun simctl boot "$DEVICE" || true
+          xcrun simctl bootstatus "$DEVICE" -b
+
+      - name: Test iOS
+        env:
+          CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER: xcrun simctl spawn booted
+        run: cargo test --lib --target aarch64-apple-ios-sim

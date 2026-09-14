@@ -10,20 +10,24 @@
 
 mod config;
 mod error;
+mod identity;
 mod init;
 mod native;
+mod queue;
 mod screen;
 
 pub use config::{Environment, InitConfig, LaunchMode};
 pub use error::QonversionError;
+pub use identity::{identify, logout};
 pub use init::{initialize, is_initialized};
+pub use queue::{sdk_timeout, set_sdk_timeout, DEFAULT_SDK_TIMEOUT};
 pub use screen::show_screen;
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        initialize, is_initialized, show_screen, Environment, InitConfig, LaunchMode,
-        QonversionError,
+        identify, initialize, is_initialized, logout, sdk_timeout, set_sdk_timeout, show_screen,
+        Environment, InitConfig, LaunchMode, QonversionError, DEFAULT_SDK_TIMEOUT,
     };
 }
 
@@ -33,6 +37,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_project_key() {
+        let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         let err = initialize(InitConfig {
             project_key: "  ".into(),
@@ -45,20 +50,25 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_on_non_mobile() {
+    fn initialize_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         let err = initialize(InitConfig {
             project_key: "test_project_key".into(),
             environment: Environment::Production,
             launch_mode: LaunchMode::SubscriptionManagement,
         })
-        .expect_err("desktop/web must fail");
+        .expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
         assert!(!is_initialized());
     }
 
     #[test]
     fn double_init_is_rejected() {
+        let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = initialize(InitConfig {
@@ -72,6 +82,7 @@ mod tests {
 
     #[test]
     fn show_screen_rejects_empty_context_key() {
+        let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = show_screen("  ").expect_err("empty context key must fail");
@@ -80,16 +91,70 @@ mod tests {
 
     #[test]
     fn show_screen_requires_init() {
+        let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         let err = show_screen("paywall").expect_err("must require initialize");
         assert_eq!(err, QonversionError::NotInitialized);
     }
 
     #[test]
-    fn show_screen_unsupported_on_non_mobile() {
+    fn show_screen_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = show_screen("paywall").expect_err("desktop/web must fail");
+        let err = show_screen("paywall").expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn identify_rejects_empty_user_id() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = identify("  ").expect_err("empty user id must fail");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn identify_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = identify("user-1").expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn identify_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = identify("user-1").expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn logout_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = logout().expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn logout_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = logout().expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
     }
 }

@@ -37,3 +37,7 @@ objc = "0.2"
 
 [dev-dependencies]
 dioxus = { version = "0.7.10", features = ["desktop"] }
+
+[lints.rust]
+# objc 0.2 macros expand to `cfg(feature = "cargo-clippy")` (predates `cfg(clippy)`).
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

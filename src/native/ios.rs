@@ -38,6 +38,23 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
     map_host_result(err)
 }
 
+pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
+    let host = host_class()?;
+    let id = nsstring(user_id)?;
+
+    let err: *mut Object = unsafe { msg_send![host, identifyWithUserId: id] };
+
+    map_host_result(err)
+}
+
+pub(crate) fn logout() -> Result<(), QonversionError> {
+    let host = host_class()?;
+
+    let err: *mut Object = unsafe { msg_send![host, logout] };
+
+    map_host_result(err)
+}
+
 fn host_class() -> Result<&'static Class, QonversionError> {
     Class::get("DioxusQonversionHost").ok_or_else(|| {
         QonversionError::HostMissing(

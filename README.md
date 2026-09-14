@@ -28,8 +28,8 @@ Native calls go through a thin host — Kotlin on Android (auto-bundled by Dioxu
 
 | Layer | Owns |
 | -- | -- |
-| **Library** | Qonversion primitives (init, identify, paywall, entitlements, restore, …) |
-| **App** | Project key, Remote Config field names, gating UI, fail-open vs fail-closed policy |
+| **Library** | Qonversion primitives (init, identify, logout, paywall, …), serial SDK queue + default timeout |
+| **App** | Project key, stable user id, Remote Config field names, gating UI, fail-open vs fail-closed policy |
 
 ## Initialize
 
@@ -46,6 +46,24 @@ initialize(InitConfig {
 ```
 
 Double-init returns a typed error. Desktop / web builds return `UnsupportedPlatform`.
+
+## Identify / logout
+
+After init (and after your app session restore / sign-in), map a **stable** app user id into Qonversion so purchases attach to that user. Use your auth provider uid — not an ephemeral session token.
+
+```rust
+use dioxus_qonversion::{identify, logout};
+
+// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
+identify(firebase_uid)?;
+
+// On sign-out:
+logout()?;
+```
+
+Both go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker still finishes before the next queued call. `show_screen` stays fire-and-present and is **not** on this queue.
+
+If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library also does not memoize Remote Config; clear any app-side caches yourself after `logout`.
 
 ## Present a No-Codes screen
 
