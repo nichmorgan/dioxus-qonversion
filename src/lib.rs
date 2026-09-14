@@ -49,7 +49,6 @@ mod tests {
         assert!(!is_initialized());
     }
 
-    #[cfg(not(target_os = "ios"))]
     #[test]
     fn initialize_fails_without_native_runtime() {
         let _guard = queue::test_lock();
@@ -60,9 +59,9 @@ mod tests {
             launch_mode: LaunchMode::SubscriptionManagement,
         })
         .expect_err("must fail without a native host");
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         assert!(matches!(err, QonversionError::HostMissing(_)));
         assert!(!is_initialized());
     }
@@ -98,16 +97,15 @@ mod tests {
         assert_eq!(err, QonversionError::NotInitialized);
     }
 
-    #[cfg(not(target_os = "ios"))]
     #[test]
     fn show_screen_fails_without_native_runtime() {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = show_screen("paywall").expect_err("must fail without a native host");
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         assert!(matches!(err, QonversionError::HostMissing(_)));
     }
 
@@ -128,16 +126,15 @@ mod tests {
         assert_eq!(err, QonversionError::NotInitialized);
     }
 
-    #[cfg(not(target_os = "ios"))]
     #[test]
     fn identify_fails_without_native_runtime() {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = identify("user-1").expect_err("must fail without a native host");
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         assert!(matches!(err, QonversionError::HostMissing(_)));
     }
 
@@ -149,16 +146,15 @@ mod tests {
         assert_eq!(err, QonversionError::NotInitialized);
     }
 
-    #[cfg(not(target_os = "ios"))]
     #[test]
     fn logout_fails_without_native_runtime() {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = logout().expect_err("must fail without a native host");
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         assert!(matches!(err, QonversionError::HostMissing(_)));
     }
 }
