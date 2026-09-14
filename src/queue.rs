@@ -3,6 +3,7 @@
 //! [`show_screen`](crate::show_screen) stays fire-and-present and does **not**
 //! go through this queue.
 
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -48,7 +49,12 @@ fn job_sender() -> mpsc::Sender<Job> {
                 .name("dioxus-qonversion-sdk".into())
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
-                        let result = (job.work)();
+                        let result = panic::catch_unwind(AssertUnwindSafe(|| (job.work)()))
+                            .unwrap_or_else(|_| {
+                                Err(QonversionError::Native {
+                                    message: "Qonversion SDK worker panicked".into(),
+                                })
+                            });
                         // Caller may have timed out and dropped the receiver —
                         // that is intentional; native work still completed.
                         let _ = job.reply.send(result);
@@ -90,7 +96,7 @@ where
 }
 
 #[cfg(test)]
-/// Serialize tests that share the process-wide worker / timeout.
+/// Serialize tests that share process-wide SDK state (worker, timeout, init flag).
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())

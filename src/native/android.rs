@@ -135,12 +135,14 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
 }
 
 fn java_vm_and_context() -> Result<(JavaVM, jobject), QonversionError> {
-    let android_ctx = ndk_context::android_context();
-    if android_ctx.context().is_null() || android_ctx.vm().is_null() {
-        return Err(QonversionError::HostMissing(
-            "ndk_context is not initialized (is this a Dioxus Android app?)".into(),
-        ));
-    }
+    let android_ctx = std::panic::catch_unwind(ndk_context::android_context)
+        .ok()
+        .filter(|ctx| !ctx.context().is_null() && !ctx.vm().is_null())
+        .ok_or_else(|| {
+            QonversionError::HostMissing(
+                "ndk_context is not initialized (is this a Dioxus Android app?)".into(),
+            )
+        })?;
     let vm = unsafe { JavaVM::from_raw(android_ctx.vm().cast()) };
     Ok((vm, android_ctx.context() as jobject))
 }
