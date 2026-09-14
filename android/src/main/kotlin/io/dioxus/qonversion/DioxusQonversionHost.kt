@@ -8,6 +8,8 @@ import com.qonversion.android.sdk.Qonversion
 import com.qonversion.android.sdk.QonversionConfig
 import com.qonversion.android.sdk.dto.QEnvironment
 import com.qonversion.android.sdk.dto.QLaunchMode
+import com.qonversion.android.sdk.dto.QUser
+import com.qonversion.android.sdk.listeners.QonversionUserCallback
 import io.qonversion.nocodes.NoCodes
 import io.qonversion.nocodes.NoCodesConfig
 import java.util.concurrent.CountDownLatch
@@ -82,18 +84,78 @@ object DioxusQonversionHost {
         return null
     }
 
-    private fun <T> runOnMainSync(block: () -> T): T {
+    /**
+     * Identify the Qonversion user with a stable app user id.
+     *
+     * Posts identify to the main looper and **waits** on the calling thread for
+     * the SDK callback. Must not be invoked on the main thread (deadlock).
+     * The Rust serial worker always calls this off-main.
+     *
+     * @return `null` on success, or an error description on failure.
+     */
+    @JvmStatic
+    fun identify(userId: String): String? {
+        val trimmed = userId.trim()
+        if (trimmed.isEmpty()) {
+            return "user_id must not be empty"
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return "identify must not be called on the Android main thread"
+        }
+
+        val latch = CountDownLatch(1)
+        val errorRef = AtomicReference<String?>(null)
+        Handler(Looper.getMainLooper()).post {
+            try {
+                Qonversion.shared.identify(trimmed, object : QonversionUserCallback {
+                    override fun onSuccess(user: QUser) {
+                        latch.countDown()
+                    }
+
+                    override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
+                        errorRef.set(qError.description ?: qError.toString())
+                        latch.countDown()
+                    }
+                })
+            } catch (t: Throwable) {
+                errorRef.set(t.message ?: t.toString())
+                latch.countDown()
+            }
+        }
+        latch.await()
+        return errorRef.get()
+    }
+
+    /**
+     * Clear the Qonversion user session.
+     *
+     * Hops to the main looper and **waits**.
+     *
+     * @return `null` on success, or an error description on failure.
+     */
+    @JvmStatic
+    fun logout(): String? {
+        return runOnMainSync {
+            try {
+                Qonversion.shared.logout()
+                null
+            } catch (t: Throwable) {
+                t.message ?: t.toString()
+            }
+        }
+    }
+
+    private fun runOnMainSync(block: () -> String?): String? {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return block()
         }
         val latch = CountDownLatch(1)
-        val result = AtomicReference<T>()
+        val result = AtomicReference<String?>()
         Handler(Looper.getMainLooper()).post {
             result.set(block())
             latch.countDown()
         }
         latch.await()
-        @Suppress("UNCHECKED_CAST")
-        return result.get() as T
+        return result.get()
     }
 }

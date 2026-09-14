@@ -10,3 +10,11 @@ pub(crate) fn initialize(_config: &InitConfig) -> Result<(), QonversionError> {
 pub(crate) fn show_screen(_context_key: &str) -> Result<(), QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }
+
+pub(crate) fn identify(_user_id: &str) -> Result<(), QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
+pub(crate) fn logout() -> Result<(), QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}

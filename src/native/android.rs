@@ -86,6 +86,54 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
     })
 }
 
+pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+    let user_id = user_id.to_string();
+
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+        let id = env
+            .new_string(&user_id)
+            .map_err(|e| QonversionError::Native {
+                message: format!("failed to create user id string: {e}"),
+            })?;
+
+        let err = env
+            .call_static_method(
+                &host,
+                jni_str!("identify"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+                &[JValue::Object(&id)],
+            )
+            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.identify"))?
+            .l()?;
+
+        map_host_result(env, err)
+    })
+}
+
+pub(crate) fn logout() -> Result<(), QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+
+        let err = env
+            .call_static_method(
+                &host,
+                jni_str!("logout"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )
+            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.logout"))?
+            .l()?;
+
+        map_host_result(env, err)
+    })
+}
+
 fn java_vm_and_context() -> Result<(JavaVM, jobject), QonversionError> {
     let android_ctx = ndk_context::android_context();
     if android_ctx.context().is_null() || android_ctx.vm().is_null() {
