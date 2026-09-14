@@ -55,6 +55,19 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
     map_host_result(err)
 }
 
+pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let key = match context_key {
+        Some(key) => nsstring(key)?,
+        None => std::ptr::null_mut(),
+    };
+
+    let envelope: *mut Object = unsafe { msg_send![host, remoteConfigWithContextKey: key] };
+    nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
+        message: "DioxusQonversionHost.remoteConfigWithContextKey returned nil".into(),
+    })
+}
+
 fn host_class() -> Result<&'static Class, QonversionError> {
     Class::get("DioxusQonversionHost").ok_or_else(|| {
         QonversionError::HostMissing(

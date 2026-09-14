@@ -18,3 +18,7 @@ pub(crate) fn identify(_user_id: &str) -> Result<(), QonversionError> {
 pub(crate) fn logout() -> Result<(), QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }
+
+pub(crate) fn remote_config(_context_key: Option<&str>) -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}

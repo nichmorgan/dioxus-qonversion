@@ -14,6 +14,7 @@ mod identity;
 mod init;
 mod native;
 mod queue;
+mod remote_config;
 mod screen;
 
 pub use config::{Environment, InitConfig, LaunchMode};
@@ -21,13 +22,21 @@ pub use error::QonversionError;
 pub use identity::{identify, logout};
 pub use init::{initialize, is_initialized};
 pub use queue::{sdk_timeout, set_sdk_timeout, DEFAULT_SDK_TIMEOUT};
+pub use remote_config::{
+    remote_config, remote_config_default, Experiment, ExperimentGroup, ExperimentGroupType,
+    RemoteConfig, RemoteConfigurationAssignmentType, RemoteConfigurationSource,
+    RemoteConfigurationSourceType,
+};
 pub use screen::show_screen;
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        identify, initialize, is_initialized, logout, sdk_timeout, set_sdk_timeout, show_screen,
-        Environment, InitConfig, LaunchMode, QonversionError, DEFAULT_SDK_TIMEOUT,
+        identify, initialize, is_initialized, logout, remote_config, remote_config_default,
+        sdk_timeout, set_sdk_timeout, show_screen, Environment, Experiment, ExperimentGroup,
+        ExperimentGroupType, InitConfig, LaunchMode, QonversionError, RemoteConfig,
+        RemoteConfigurationAssignmentType, RemoteConfigurationSource,
+        RemoteConfigurationSourceType, DEFAULT_SDK_TIMEOUT,
     };
 }
 
@@ -152,6 +161,55 @@ mod tests {
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = logout().expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn remote_config_rejects_empty_context_key() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = remote_config("  ").expect_err("empty context key must fail");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn remote_config_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = remote_config("paywall").expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn remote_config_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = remote_config("paywall").expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn remote_config_default_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = remote_config_default().expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn remote_config_default_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = remote_config_default().expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]

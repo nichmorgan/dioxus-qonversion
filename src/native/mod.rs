@@ -38,3 +38,8 @@ pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
 pub(crate) fn logout() -> Result<(), QonversionError> {
     sys::logout()
 }
+
+/// Fetch Remote Config. `None` is the dashboard empty context key.
+pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
+    sys::remote_config(context_key)
+}

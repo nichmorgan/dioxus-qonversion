@@ -8,10 +8,16 @@ import com.qonversion.android.sdk.Qonversion
 import com.qonversion.android.sdk.QonversionConfig
 import com.qonversion.android.sdk.dto.QEnvironment
 import com.qonversion.android.sdk.dto.QLaunchMode
+import com.qonversion.android.sdk.dto.QRemoteConfig
+import com.qonversion.android.sdk.dto.QRemoteConfigurationSource
 import com.qonversion.android.sdk.dto.QUser
+import com.qonversion.android.sdk.dto.experiments.QExperiment
+import com.qonversion.android.sdk.listeners.QonversionRemoteConfigCallback
 import com.qonversion.android.sdk.listeners.QonversionUserCallback
 import io.qonversion.nocodes.NoCodes
 import io.qonversion.nocodes.NoCodesConfig
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
 
@@ -127,6 +133,53 @@ object DioxusQonversionHost {
     }
 
     /**
+     * Fetch Remote Config for [contextKey], or the empty context key when [contextKey] is null/blank.
+     *
+     * Posts to the main looper and **waits** on the calling thread for the SDK callback.
+     * Must not be invoked on the main thread (deadlock). The Rust serial worker always
+     * calls this off-main.
+     *
+     * @return JSON envelope string (`ok:true` + payload, or `ok:false` + error). Never null.
+     */
+    @JvmStatic
+    fun remoteConfig(contextKey: String?): String {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return encodeRemoteConfigError("remote_config must not be called on the Android main thread")
+        }
+
+        val key = contextKey?.trim()?.takeIf { it.isNotEmpty() }
+        val latch = CountDownLatch(1)
+        val envelope = AtomicReference(encodeRemoteConfigError("remote config did not complete"))
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val callback = object : QonversionRemoteConfigCallback {
+                    override fun onSuccess(remoteConfig: QRemoteConfig) {
+                        envelope.set(encodeRemoteConfigSuccess(remoteConfig))
+                        latch.countDown()
+                    }
+
+                    override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
+                        envelope.set(
+                            encodeRemoteConfigError(qError.description ?: qError.toString()),
+                        )
+                        latch.countDown()
+                    }
+                }
+                if (key == null) {
+                    Qonversion.shared.remoteConfig(callback)
+                } else {
+                    Qonversion.shared.remoteConfig(key, callback)
+                }
+            } catch (t: Throwable) {
+                envelope.set(encodeRemoteConfigError(t.message ?: t.toString()))
+                latch.countDown()
+            }
+        }
+        latch.await()
+        return envelope.get()
+    }
+
+    /**
      * Clear the Qonversion user session.
      *
      * Hops to the main looper and **waits**.
@@ -157,5 +210,90 @@ object DioxusQonversionHost {
         }
         latch.await()
         return result.get()
+    }
+
+    private fun encodeRemoteConfigSuccess(config: QRemoteConfig): String {
+        return try {
+            val root = JSONObject()
+            root.put("ok", true)
+            root.put("payload", jsonValue(config.payload))
+            root.put("source", encodeSource(config.source))
+            val experiment = config.experiment
+            if (experiment == null) {
+                root.put("experiment", JSONObject.NULL)
+            } else {
+                root.put("experiment", encodeExperiment(experiment))
+            }
+            root.toString()
+        } catch (t: Throwable) {
+            encodeRemoteConfigError(t.message ?: t.toString())
+        }
+    }
+
+    private fun encodeRemoteConfigError(message: String): String {
+        val root = JSONObject()
+        root.put("ok", false)
+        root.put("error", message)
+        return root.toString()
+    }
+
+    private fun encodeSource(source: QRemoteConfigurationSource): JSONObject {
+        val obj = JSONObject()
+        obj.put("id", source.id)
+        obj.put("name", source.name)
+        obj.put("assignment_type", source.assignmentType.type)
+        obj.put("type", source.type.type)
+        val contextKey = source.contextKey
+        if (contextKey.isNullOrEmpty()) {
+            obj.put("context_key", JSONObject.NULL)
+        } else {
+            obj.put("context_key", contextKey)
+        }
+        return obj
+    }
+
+    private fun encodeExperiment(experiment: QExperiment): JSONObject {
+        val group = JSONObject()
+        group.put("id", experiment.group.id)
+        group.put("name", experiment.group.name)
+        group.put("type", experiment.group.type.type)
+        val obj = JSONObject()
+        obj.put("id", experiment.id)
+        obj.put("name", experiment.name)
+        obj.put("group", group)
+        return obj
+    }
+
+    private fun jsonValue(value: Any?): Any {
+        return when (value) {
+            null -> JSONObject.NULL
+            JSONObject.NULL -> JSONObject.NULL
+            is JSONObject, is JSONArray -> value
+            is Map<*, *> -> {
+                val obj = JSONObject()
+                for ((k, v) in value) {
+                    if (k is String) {
+                        obj.put(k, jsonValue(v))
+                    }
+                }
+                obj
+            }
+            is Collection<*> -> {
+                val arr = JSONArray()
+                for (item in value) {
+                    arr.put(jsonValue(item))
+                }
+                arr
+            }
+            is Array<*> -> {
+                val arr = JSONArray()
+                for (item in value) {
+                    arr.put(jsonValue(item))
+                }
+                arr
+            }
+            is Boolean, is Number, is String -> value
+            else -> value.toString()
+        }
     }
 }
