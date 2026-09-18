@@ -78,11 +78,7 @@ pub enum ScreenEvent {
 /// Requires a successful [`crate::initialize`] first. Desktop and web return
 /// [`QonversionError::UnsupportedPlatform`].
 pub fn show_screen(context_key: &str) -> Result<(), QonversionError> {
-    if context_key.trim().is_empty() {
-        return Err(QonversionError::InvalidConfig(
-            "context_key must not be empty".into(),
-        ));
-    }
+    let context_key = crate::helpers::require_context_key(context_key)?;
     init::require_initialized()?;
     native::show_screen(context_key)
 }

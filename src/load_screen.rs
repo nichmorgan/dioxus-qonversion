@@ -1,4 +1,4 @@
-//! On-demand No-Codes `loadScreen` (ask-first / cache warm).
+//! On-demand No-Codes `loadScreen`.
 
 use serde_json::Value;
 
@@ -8,9 +8,6 @@ use crate::native;
 use crate::queue;
 
 /// Screen identity returned by a successful [`load_screen`].
-///
-/// A success warms the shared No-Codes cache so a later [`crate::show_screen`]
-/// with the same context key can render without the SDK loading view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedScreen {
     pub id: String,
@@ -27,13 +24,7 @@ pub struct LoadedScreen {
 /// this key. Other SDK failures are [`QonversionError::Native`] or
 /// [`QonversionError::Timeout`].
 pub fn load_screen(context_key: &str) -> Result<LoadedScreen, QonversionError> {
-    let context_key = context_key.trim();
-    if context_key.is_empty() {
-        return Err(QonversionError::InvalidConfig(
-            "context_key must not be empty".into(),
-        ));
-    }
-    let context_key = context_key.to_string();
+    let context_key = crate::helpers::require_context_key(context_key)?.to_string();
     init::require_initialized()?;
     queue::run_serial(move || {
         let envelope = native::load_screen(&context_key)?;
@@ -46,37 +37,13 @@ pub(crate) fn parse_envelope(
     json: &str,
     requested_key: &str,
 ) -> Result<LoadedScreen, QonversionError> {
-    let value: Value = serde_json::from_str(json).map_err(|err| QonversionError::Native {
-        message: format!("invalid load screen envelope: {err}"),
+    let object = crate::helpers::parse_ok_envelope(json, "load screen", |object| {
+        object
+            .get("screen_not_found")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then_some(QonversionError::ScreenNotFound)
     })?;
-    let object = value.as_object().ok_or_else(|| QonversionError::Native {
-        message: "load screen envelope must be a JSON object".into(),
-    })?;
-
-    match object.get("ok") {
-        Some(Value::Bool(true)) => {}
-        Some(Value::Bool(false)) => {
-            if object
-                .get("screen_not_found")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                return Err(QonversionError::ScreenNotFound);
-            }
-            let message = object
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown native error");
-            return Err(QonversionError::Native {
-                message: message.to_string(),
-            });
-        }
-        _ => {
-            return Err(QonversionError::Native {
-                message: "load screen envelope missing ok:true".into(),
-            });
-        }
-    }
 
     let id = object
         .get("id")

@@ -53,7 +53,7 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
                 message: format!("failed to create project key string: {e}"),
             })?;
 
-        register_screen_failed_native(env, &host)?;
+        register_screen_native_methods(env, &host)?;
 
         let err = env
             .call_static_method(
@@ -314,7 +314,7 @@ fn activity_class_loader<'a>(
         })
 }
 
-fn register_screen_failed_native(
+fn register_screen_native_methods(
     env: &mut Env<'_>,
     host: &JClass<'_>,
 ) -> Result<(), QonversionError> {

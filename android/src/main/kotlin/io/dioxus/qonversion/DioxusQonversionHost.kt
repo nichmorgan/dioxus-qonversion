@@ -54,28 +54,36 @@ object DioxusQonversionHost {
 
     private val screenFailedDelegate = object : NoCodesDelegate {
         override fun onActionFinishedExecuting(action: QAction) {
-            notifyScreenEventSafe(encodeActionEvent("action_finished", action, null))
+            notifyNativeSafe("notifyScreenEvent") {
+                notifyScreenEvent(encodeScreenEvent("action_finished", action = action.type.type))
+            }
         }
 
         override fun onActionFailedToExecute(action: QAction) {
             val message = action.error?.toString() ?: "No-Codes action failed"
-            notifyScreenEventSafe(encodeActionEvent("action_failed", action, message))
+            notifyNativeSafe("notifyScreenEvent") {
+                notifyScreenEvent(
+                    encodeScreenEvent("action_failed", action = action.type.type, message = message)
+                )
+            }
         }
 
         override fun onFinished() {
-            notifyScreenEventSafe(encodeFinishedEvent())
+            notifyNativeSafe("notifyScreenEvent") {
+                notifyScreenEvent(encodeScreenEvent("finished"))
+            }
         }
 
         override fun onCustomAction(value: String) {
-            notifyScreenEventSafe(encodeCustomActionEvent(value))
+            notifyNativeSafe("notifyScreenEvent") {
+                notifyScreenEvent(encodeScreenEvent("custom_action", value = value))
+            }
         }
 
         override fun onScreenFailedToLoad(error: NoCodesError) {
             val storeUnavailable = isStoreUnavailable(error)
-            try {
+            notifyNativeSafe("notifyScreenFailed") {
                 notifyScreenFailed(storeUnavailable, error.toString())
-            } catch (t: Throwable) {
-                android.util.Log.e("DioxusQonversion", "notifyScreenFailed failed: ${t.message}", t)
             }
             try {
                 NoCodes.shared.close()
@@ -494,34 +502,31 @@ object DioxusQonversionHost {
         }
     }
 
-    private fun notifyScreenEventSafe(json: String) {
+    private fun notifyNativeSafe(name: String, block: () -> Unit) {
         try {
-            notifyScreenEvent(json)
+            block()
         } catch (t: Throwable) {
-            android.util.Log.e("DioxusQonversion", "notifyScreenEvent failed: ${t.message}", t)
+            android.util.Log.e("DioxusQonversion", "$name failed: ${t.message}", t)
         }
     }
 
-    private fun encodeActionEvent(kind: String, action: QAction, message: String?): String {
+    private fun encodeScreenEvent(
+        kind: String,
+        action: String? = null,
+        message: String? = null,
+        value: String? = null,
+    ): String {
         val root = JSONObject()
         root.put("kind", kind)
-        root.put("action", action.type.type)
+        if (action != null) {
+            root.put("action", action)
+        }
         if (message != null) {
             root.put("message", message)
         }
-        return root.toString()
-    }
-
-    private fun encodeFinishedEvent(): String {
-        val root = JSONObject()
-        root.put("kind", "finished")
-        return root.toString()
-    }
-
-    private fun encodeCustomActionEvent(value: String): String {
-        val root = JSONObject()
-        root.put("kind", "custom_action")
-        root.put("value", value)
+        if (value != null) {
+            root.put("value", value)
+        }
         return root.toString()
     }
 

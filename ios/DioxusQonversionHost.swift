@@ -14,7 +14,7 @@ func dioxus_qonversion_notify_screen_event(_ json: UnsafePointer<CChar>?)
 /// (SPM: https://github.com/qonversion/qonversion-ios-sdk, minimum 6.13.0).
 @objc(DioxusQonversionHost)
 public class DioxusQonversionHost: NSObject {
-    private static let screenFailedDelegate = ScreenFailedDelegate()
+    private static let noCodesEventDelegate = NoCodesEventDelegate()
 
     /// Initialize Qonversion (Subscription Management) and No-Codes with the same project key.
     ///
@@ -33,9 +33,9 @@ public class DioxusQonversionHost: NSObject {
         qonversionConfig.setEnvironment(sandbox ? .sandbox : .production)
         Qonversion.initWithConfig(qonversionConfig)
 
-        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: screenFailedDelegate)
+        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: noCodesEventDelegate)
         NoCodes.initialize(with: noCodesConfig)
-        NoCodes.shared.set(delegate: screenFailedDelegate)
+        NoCodes.shared.set(delegate: noCodesEventDelegate)
         return nil
     }
 
@@ -224,9 +224,7 @@ public class DioxusQonversionHost: NSObject {
                 screenNotFound: noCodesError.type == .screenNotFound
             )
         }
-        let blob = String(describing: error).uppercased()
-        let screenNotFound = blob.contains("SCREENNOTFOUND") || blob.contains("SCREEN_NOT_FOUND")
-        return encodeLoadScreenError(error.localizedDescription, screenNotFound: screenNotFound)
+        return encodeLoadScreenError(error.localizedDescription, screenNotFound: false)
     }
 
     private static func encodeLoadScreenError(_ message: String, screenNotFound: Bool) -> String {
@@ -294,18 +292,22 @@ public class DioxusQonversionHost: NSObject {
     }
 
     private static func stringifyEnvelope(_ dict: [String: Any]) -> String {
-        guard JSONSerialization.isValidJSONObject(dict),
-              let data = try? JSONSerialization.data(withJSONObject: dict),
-              let string = String(data: data, encoding: .utf8)
-        else {
-            return #"{"ok":false,"error":"failed to serialize remote config"}"#
-        }
-        return string
+        stringifyJson(dict) ?? #"{"ok":false,"error":"failed to serialize remote config"}"#
     }
 }
 
+private func stringifyJson(_ dict: [String: Any]) -> String? {
+    guard JSONSerialization.isValidJSONObject(dict),
+          let data = try? JSONSerialization.data(withJSONObject: dict),
+          let string = String(data: data, encoding: .utf8)
+    else {
+        return nil
+    }
+    return string
+}
+
 /// Forwards No-Codes load failures and purchase / restore / finish / custom-action events.
-private final class ScreenFailedDelegate: NoCodesDelegate {
+private final class NoCodesEventDelegate: NoCodesDelegate {
     func noCodesFinishedExecuting(action: NoCodesAction) {
         notifyScreenEvent(kind: "action_finished", action: action, message: nil)
     }
@@ -344,10 +346,7 @@ private final class ScreenFailedDelegate: NoCodesDelegate {
     }
 
     private func notifyScreenEventJson(_ dict: [String: Any]) {
-        guard JSONSerialization.isValidJSONObject(dict),
-              let data = try? JSONSerialization.data(withJSONObject: dict),
-              let string = String(data: data, encoding: .utf8)
-        else {
+        guard let string = stringifyJson(dict) else {
             return
         }
         string.withCString { cstr in

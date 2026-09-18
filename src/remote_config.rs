@@ -87,12 +87,7 @@ pub enum ExperimentGroupType {
 /// An empty payload map is success. SDK failures are
 /// [`QonversionError::Native`] or [`QonversionError::Timeout`].
 pub fn remote_config(context_key: &str) -> Result<RemoteConfig, QonversionError> {
-    let context_key = context_key.trim();
-    if context_key.is_empty() {
-        return Err(QonversionError::InvalidConfig(
-            "context_key must not be empty".into(),
-        ));
-    }
+    let context_key = crate::helpers::require_context_key(context_key)?;
     fetch(Some(context_key.to_string()))
 }
 
@@ -113,30 +108,7 @@ fn fetch(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
 
 /// Parse the native host JSON envelope into [`RemoteConfig`].
 pub(crate) fn parse_envelope(json: &str) -> Result<RemoteConfig, QonversionError> {
-    let value: Value = serde_json::from_str(json).map_err(|err| QonversionError::Native {
-        message: format!("invalid remote config envelope: {err}"),
-    })?;
-    let object = value.as_object().ok_or_else(|| QonversionError::Native {
-        message: "remote config envelope must be a JSON object".into(),
-    })?;
-
-    match object.get("ok") {
-        Some(Value::Bool(true)) => {}
-        Some(Value::Bool(false)) => {
-            let message = object
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown native error");
-            return Err(QonversionError::Native {
-                message: message.to_string(),
-            });
-        }
-        _ => {
-            return Err(QonversionError::Native {
-                message: "remote config envelope missing ok:true".into(),
-            });
-        }
-    }
+    let object = crate::helpers::parse_ok_envelope(json, "remote config", |_| None)?;
 
     let payload = match object.get("payload") {
         None | Some(Value::Null) => Map::new(),

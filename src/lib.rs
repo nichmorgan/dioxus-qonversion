@@ -10,6 +10,7 @@
 
 mod config;
 mod error;
+mod helpers;
 mod identity;
 mod init;
 mod load_screen;
