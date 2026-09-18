@@ -10,13 +10,21 @@
 
 use jni::objects::{JClass, JClassLoader, JObject, JString, JValue};
 use jni::strings::JNIStr;
-use jni::sys::jobject;
-use jni::{jni_sig, jni_str, Env, JavaVM};
+use jni::sys::{jboolean, jobject};
+use jni::{jni_sig, jni_str, native_method, Env, JavaVM, NativeMethod};
 
 use crate::config::{Environment, InitConfig};
 use crate::error::QonversionError;
 
 const HOST_CLASS: &JNIStr = jni_str!("io/dioxus/qonversion/DioxusQonversionHost");
+
+/// Must match `DioxusQonversionHost.SKIP_PREFLIGHT_MAIN_THREAD`.
+const SKIP_PREFLIGHT_MAIN_THREAD: &str = "SKIP_PREFLIGHT_MAIN_THREAD";
+
+const NOTIFY_SCREEN_FAILED: NativeMethod = native_method! {
+    static fn notify_screen_failed(store_unavailable: jboolean, message: JString),
+    name = "notifyScreenFailed",
+};
 
 impl From<jni::errors::Error> for QonversionError {
     fn from(error: jni::errors::Error) -> Self {
@@ -39,6 +47,8 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
             .map_err(|e| QonversionError::Native {
                 message: format!("failed to create project key string: {e}"),
             })?;
+
+        register_screen_failed_native(env, &host)?;
 
         let err = env
             .call_static_method(
@@ -66,6 +76,18 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
         let context = unsafe { JObject::from_raw(env, context_raw) };
         let activity = as_activity(env, &context)?;
         let host = find_host_class(env, &context)?;
+
+        let preflight = env
+            .call_static_method(
+                &host,
+                jni_str!("ensureStoreAvailable"),
+                jni_sig!("(Landroid/content/Context;)Ljava/lang/String;"),
+                &[JValue::Object(&context)],
+            )
+            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.ensureStoreAvailable"))?
+            .l()?;
+        map_store_preflight(env, preflight)?;
+
         let key = env
             .new_string(&context_key)
             .map_err(|e| QonversionError::Native {
@@ -260,19 +282,75 @@ fn activity_class_loader<'a>(
         })
 }
 
+fn register_screen_failed_native(
+    env: &mut Env<'_>,
+    host: &JClass<'_>,
+) -> Result<(), QonversionError> {
+    unsafe { env.register_native_methods(host, &[NOTIFY_SCREEN_FAILED]) }.map_err(|e| {
+        QonversionError::Native {
+            message: format!("failed to register notifyScreenFailed: {e}"),
+        }
+    })
+}
+
+fn notify_screen_failed<'local>(
+    env: &mut Env<'local>,
+    _class: JClass<'local>,
+    store_unavailable: jboolean,
+    message: JString<'local>,
+) -> Result<(), jni::errors::Error> {
+    let message = message.try_to_string(env).unwrap_or_default();
+    crate::screen::dispatch_screen_failed(crate::screen::screen_failed_error(
+        store_unavailable,
+        message,
+    ));
+    Ok(())
+}
+
+fn map_store_preflight(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), QonversionError> {
+    match host_string(
+        env,
+        err,
+        "store preflight result was not a String",
+        "unknown store preflight error",
+    )? {
+        None => Ok(()),
+        Some(message) if message == SKIP_PREFLIGHT_MAIN_THREAD => Ok(()),
+        Some(_) => Err(QonversionError::StoreUnavailable),
+    }
+}
+
 fn map_host_result(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), QonversionError> {
-    if err.is_null() {
-        return Ok(());
+    match host_string(
+        env,
+        err,
+        "host error was not a String",
+        "unknown native error",
+    )? {
+        None => Ok(()),
+        Some(message) => Err(QonversionError::Native { message }),
+    }
+}
+
+fn host_string(
+    env: &mut Env<'_>,
+    obj: JObject<'_>,
+    not_a_string: &str,
+    utf8_fallback: &str,
+) -> Result<Option<String>, QonversionError> {
+    if obj.is_null() {
+        return Ok(None);
     }
     let jstring = env
-        .cast_local::<JString>(err)
+        .cast_local::<JString>(obj)
         .map_err(|e| QonversionError::Native {
-            message: format!("host error was not a String: {e}"),
+            message: format!("{not_a_string}: {e}"),
         })?;
-    let message = jstring
-        .try_to_string(env)
-        .unwrap_or_else(|_| "unknown native error".into());
-    Err(QonversionError::Native { message })
+    Ok(Some(
+        jstring
+            .try_to_string(env)
+            .unwrap_or_else(|_| utf8_fallback.into()),
+    ))
 }
 
 fn required_jstring(

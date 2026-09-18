@@ -2,12 +2,17 @@ import Foundation
 import Qonversion
 import NoCodes
 
+@_silgen_name("dioxus_qonversion_notify_screen_failed")
+func dioxus_qonversion_notify_screen_failed(_ storeUnavailable: Int32, _ message: UnsafePointer<CChar>?)
+
 /// Thin ObjC-visible host so Rust can call Qonversion + No-Codes via `objc`.
 ///
 /// Compile this file into your Dioxus iOS target and add the Qonversion iOS SDK
 /// (SPM: https://github.com/qonversion/qonversion-ios-sdk, minimum 6.13.0).
 @objc(DioxusQonversionHost)
 public class DioxusQonversionHost: NSObject {
+    private static let screenFailedDelegate = ScreenFailedDelegate()
+
     /// Initialize Qonversion (Subscription Management) and No-Codes with the same project key.
     ///
     /// - Returns: `nil` on success, or an error description string on failure.
@@ -25,8 +30,9 @@ public class DioxusQonversionHost: NSObject {
         qonversionConfig.setEnvironment(sandbox ? .sandbox : .production)
         Qonversion.initWithConfig(qonversionConfig)
 
-        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed)
+        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: screenFailedDelegate)
         NoCodes.initialize(with: noCodesConfig)
+        NoCodes.shared.set(delegate: screenFailedDelegate)
         return nil
     }
 
@@ -235,4 +241,31 @@ public class DioxusQonversionHost: NSObject {
         }
         return string
     }
+}
+
+/// No-Codes failed-to-load only. Other delegate methods stay default no-ops.
+private final class ScreenFailedDelegate: NoCodesDelegate {
+    func noCodesFailedToLoadScreen(error: Error?) {
+        let storeUnavailable = isStoreUnavailable(error)
+        let message = error.map { String(describing: $0) } ?? "No-Codes screen failed to load"
+        message.withCString { cstr in
+            dioxus_qonversion_notify_screen_failed(storeUnavailable ? 1 : 0, cstr)
+        }
+        NoCodes.shared.close()
+    }
+}
+
+private func isStoreUnavailable(_ error: Error?) -> Bool {
+    guard let error else {
+        return false
+    }
+    let nsError = error as NSError
+    let blob = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription) \(error)"
+        .uppercased()
+    if nsError.domain.contains("StoreKit") || nsError.domain.contains("SKError") {
+        return true
+    }
+    return blob.contains("APPLESTOREERROR")
+        || blob.contains("STORE IS UNAVAILABLE")
+        || blob.contains("STORE UNAVAILABLE")
 }

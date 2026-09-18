@@ -92,7 +92,26 @@ use dioxus_qonversion::show_screen;
 show_screen("your_context_key")?;
 ```
 
-This is **fire-and-present**: it returns once the native SDK has been asked to show the screen, not when the user dismisses it. Finished / failed-to-load callbacks come in a later milestone.
+This is **fire-and-present**: it returns once the native SDK has been asked to show the screen, not when the user dismisses it.
+
+On **Android**, `show_screen` may return `QonversionError::StoreUnavailable` **before** present when Play Billing is not connected (unsigned Play account, missing Play Store, `BILLING_UNAVAILABLE` / `SERVICE_DISCONNECTED`). Call it from Dioxus `spawn` / a background thread so that preflight can wait without deadlocking the main looper. UI-thread calls skip the blocking probe (happy path unchanged).
+
+If product fetch still fails **after** present, the process-wide handler from `set_screen_failed_handler` fires with `StoreUnavailable` (Play billing) or `Native` (other load errors). The app owns fallback UI — this crate does not show a dialog or open the Play Store. Finished / purchase / custom-action callbacks remain a later milestone.
+
+```rust
+use dioxus_qonversion::{set_screen_failed_handler, show_screen, QonversionError};
+
+set_screen_failed_handler(|err| match err {
+    QonversionError::StoreUnavailable => { /* app-owned fallback UI */ }
+    QonversionError::Native { message } => { /* log / other fallback */ }
+});
+
+// Prefer `spawn` on Android so preflight can return StoreUnavailable without flashing UI.
+match show_screen("your_context_key") {
+    Err(QonversionError::StoreUnavailable) => { /* app-owned fallback UI */ }
+    other => other?,
+}
+```
 
 ### Android (Dioxus CLI 0.7+)
 
