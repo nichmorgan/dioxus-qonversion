@@ -139,6 +139,21 @@ mod tests {
     }
 
     #[test]
+    fn main_thread_is_matchable_and_distinct_from_native() {
+        let err = QonversionError::MainThread;
+        assert_ne!(
+            err,
+            QonversionError::Native {
+                message: "main thread".into()
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "Qonversion SDK call must not run on the UI thread"
+        );
+    }
+
+    #[test]
     fn screen_not_found_is_matchable_and_distinct_from_native() {
         let err = QonversionError::ScreenNotFound;
         assert_ne!(

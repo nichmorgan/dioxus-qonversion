@@ -87,7 +87,7 @@ pub enum ExperimentGroupType {
 /// An empty payload map is success. SDK failures are
 /// [`QonversionError::Native`] or [`QonversionError::Timeout`].
 pub fn remote_config(context_key: &str) -> Result<RemoteConfig, QonversionError> {
-    let context_key = crate::helpers::require_context_key(context_key)?;
+    let context_key = crate::helpers::require_non_empty("context_key", context_key)?;
     fetch(Some(context_key.to_string()))
 }
 

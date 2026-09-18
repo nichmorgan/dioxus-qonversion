@@ -9,6 +9,7 @@
 //! uses the Activity [`ClassLoader`] when bare `FindClass` fails off the UI thread.
 
 use jni::objects::{JClass, JClassLoader, JObject, JString, JValue};
+use jni::signature::MethodSignature;
 use jni::strings::JNIStr;
 use jni::sys::{jboolean, jobject};
 use jni::{jni_sig, jni_str, native_method, Env, JavaVM, NativeMethod};
@@ -55,21 +56,19 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
 
         register_screen_native_methods(env, &host)?;
 
-        let err = env
-            .call_static_method(
-                &host,
-                jni_str!("initialize"),
-                jni_sig!("(Landroid/content/Context;Ljava/lang/String;Z)Ljava/lang/String;"),
-                &[
-                    JValue::Object(&context),
-                    JValue::Object(&key),
-                    JValue::Bool(sandbox),
-                ],
-            )
-            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.initialize"))?
-            .l()?;
-
-        map_host_result(env, err)
+        let err = call_host_jstring(
+            env,
+            &host,
+            jni_str!("initialize"),
+            jni_sig!("(Landroid/content/Context;Ljava/lang/String;Z)Ljava/lang/String;"),
+            &[
+                JValue::Object(&context),
+                JValue::Object(&key),
+                JValue::Bool(sandbox),
+            ],
+            "DioxusQonversionHost.initialize",
+        )?;
+        map_optional_host_error(err)
     })
 }
 
@@ -99,23 +98,22 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
                 message: format!("failed to create context key string: {e}"),
             })?;
 
-        let err = env
-            .call_static_method(
-                &host,
-                jni_str!("showScreen"),
-                jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)Ljava/lang/String;"),
-                &[JValue::Object(&activity), JValue::Object(&key)],
-            )
-            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.showScreen"))?
-            .l()?;
-
-        map_host_result(env, err)
+        let err = call_host_jstring(
+            env,
+            &host,
+            jni_str!("showScreen"),
+            jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)Ljava/lang/String;"),
+            &[JValue::Object(&activity), JValue::Object(&key)],
+            "DioxusQonversionHost.showScreen",
+        )?;
+        map_optional_host_error(err)
     })
 }
 
 pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
     let (vm, context_raw) = java_vm_and_context()?;
     let context_key = context_key.to_string();
+    let timeout_ms = crate::queue::timeout_ms();
 
     vm.attach_current_thread(|env| {
         let context = unsafe { JObject::from_raw(env, context_raw) };
@@ -126,23 +124,24 @@ pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> 
                 message: format!("failed to create context key string: {e}"),
             })?;
 
-        let envelope = env
-            .call_static_method(
-                &host,
-                jni_str!("loadScreen"),
-                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
-                &[JValue::Object(&key)],
-            )
-            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.loadScreen"))?
-            .l()?;
-
-        required_jstring(env, envelope, "DioxusQonversionHost.loadScreen")
+        call_host_jstring(
+            env,
+            &host,
+            jni_str!("loadScreen"),
+            jni_sig!("(Ljava/lang/String;J)Ljava/lang/String;"),
+            &[JValue::Object(&key), JValue::Long(timeout_ms)],
+            "DioxusQonversionHost.loadScreen",
+        )?
+        .ok_or_else(|| QonversionError::Native {
+            message: "DioxusQonversionHost.loadScreen returned null".into(),
+        })
     })
 }
 
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
     let (vm, context_raw) = java_vm_and_context()?;
     let user_id = user_id.to_string();
+    let timeout_ms = crate::queue::timeout_ms();
 
     vm.attach_current_thread(|env| {
         let context = unsafe { JObject::from_raw(env, context_raw) };
@@ -153,44 +152,42 @@ pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
                 message: format!("failed to create user id string: {e}"),
             })?;
 
-        let err = env
-            .call_static_method(
-                &host,
-                jni_str!("identify"),
-                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
-                &[JValue::Object(&id)],
-            )
-            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.identify"))?
-            .l()?;
-
-        map_host_result(env, err)
+        let err = call_host_jstring(
+            env,
+            &host,
+            jni_str!("identify"),
+            jni_sig!("(Ljava/lang/String;J)Ljava/lang/String;"),
+            &[JValue::Object(&id), JValue::Long(timeout_ms)],
+            "DioxusQonversionHost.identify",
+        )?;
+        map_optional_host_error(err)
     })
 }
 
 pub(crate) fn logout() -> Result<(), QonversionError> {
     let (vm, context_raw) = java_vm_and_context()?;
+    let timeout_ms = crate::queue::timeout_ms();
 
     vm.attach_current_thread(|env| {
         let context = unsafe { JObject::from_raw(env, context_raw) };
         let host = find_host_class(env, &context)?;
 
-        let err = env
-            .call_static_method(
-                &host,
-                jni_str!("logout"),
-                jni_sig!("()Ljava/lang/String;"),
-                &[],
-            )
-            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.logout"))?
-            .l()?;
-
-        map_host_result(env, err)
+        let err = call_host_jstring(
+            env,
+            &host,
+            jni_str!("logout"),
+            jni_sig!("(J)Ljava/lang/String;"),
+            &[JValue::Long(timeout_ms)],
+            "DioxusQonversionHost.logout",
+        )?;
+        map_optional_host_error(err)
     })
 }
 
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
     let (vm, context_raw) = java_vm_and_context()?;
     let context_key = context_key.map(str::to_string);
+    let timeout_ms = crate::queue::timeout_ms();
 
     vm.attach_current_thread(|env| {
         let context = unsafe { JObject::from_raw(env, context_raw) };
@@ -208,18 +205,70 @@ pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, Qonvers
             JValue::Object(&null_key)
         };
 
-        let envelope = env
-            .call_static_method(
-                &host,
-                jni_str!("remoteConfig"),
-                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
-                &[key_arg],
-            )
-            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.remoteConfig"))?
-            .l()?;
-
-        required_jstring(env, envelope, "DioxusQonversionHost.remoteConfig")
+        call_host_jstring(
+            env,
+            &host,
+            jni_str!("remoteConfig"),
+            jni_sig!("(Ljava/lang/String;J)Ljava/lang/String;"),
+            &[key_arg, JValue::Long(timeout_ms)],
+            "DioxusQonversionHost.remoteConfig",
+        )?
+        .ok_or_else(|| QonversionError::Native {
+            message: "DioxusQonversionHost.remoteConfig returned null".into(),
+        })
     })
+}
+
+pub(crate) fn is_main_thread() -> bool {
+    let Ok((vm, _)) = java_vm_and_context() else {
+        return false;
+    };
+    vm.attach_current_thread(|env| -> Result<bool, QonversionError> {
+        let looper_class =
+            env.find_class(jni_str!("android/os/Looper"))
+                .map_err(|e| QonversionError::Native {
+                    message: format!("android.os.Looper not found: {e}"),
+                })?;
+        let my = env
+            .call_static_method(
+                &looper_class,
+                jni_str!("myLooper"),
+                jni_sig!("()Landroid/os/Looper;"),
+                &[],
+            )
+            .map_err(|e| map_exception(env, e, "Looper.myLooper"))?
+            .l()
+            .map_err(|e| QonversionError::Native {
+                message: format!("Looper.myLooper returned unexpected type: {e}"),
+            })?;
+        if my.is_null() {
+            return Ok(false);
+        }
+        let main = env
+            .call_static_method(
+                &looper_class,
+                jni_str!("getMainLooper"),
+                jni_sig!("()Landroid/os/Looper;"),
+                &[],
+            )
+            .map_err(|e| map_exception(env, e, "Looper.getMainLooper"))?
+            .l()
+            .map_err(|e| QonversionError::Native {
+                message: format!("Looper.getMainLooper returned unexpected type: {e}"),
+            })?;
+        env.call_method(
+            &my,
+            jni_str!("equals"),
+            jni_sig!("(Ljava/lang/Object;)Z"),
+            &[JValue::Object(&main)],
+        )
+        .map_err(|e| map_exception(env, e, "Looper.equals"))?
+        .z()
+        .map_err(|e| QonversionError::Native {
+            message: format!("Looper.equals returned unexpected type: {e}"),
+        })
+    })
+    .unwrap_or(false)
 }
 
 fn java_vm_and_context() -> Result<(JavaVM, jobject), QonversionError> {
@@ -331,7 +380,7 @@ fn notify_screen_failed<'local>(
     message: JString<'local>,
 ) -> Result<(), jni::errors::Error> {
     let message = message.try_to_string(env).unwrap_or_default();
-    crate::screen::dispatch_screen_failed(crate::screen::screen_failed_error(
+    crate::screen::hop_screen_failed(crate::screen::screen_failed_error(
         store_unavailable,
         message,
     ));
@@ -344,9 +393,7 @@ fn notify_screen_event<'local>(
     json: JString<'local>,
 ) -> Result<(), jni::errors::Error> {
     let json = json.try_to_string(env).unwrap_or_default();
-    if let Some(event) = crate::screen::parse_event_envelope(&json) {
-        crate::screen::dispatch_screen_event(event);
-    }
+    crate::screen::hop_screen_event_json(json);
     Ok(())
 }
 
@@ -363,16 +410,34 @@ fn map_store_preflight(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), Qonver
     }
 }
 
-fn map_host_result(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), QonversionError> {
-    match host_string(
-        env,
-        err,
-        "host error was not a String",
-        "unknown native error",
-    )? {
+fn map_optional_host_error(err: Option<String>) -> Result<(), QonversionError> {
+    match err {
         None => Ok(()),
-        Some(message) => Err(QonversionError::Native { message }),
+        Some(message) => Err(crate::helpers::map_host_error_message(message)),
     }
+}
+
+fn call_host_jstring<'sig, 'sig_args>(
+    env: &mut Env<'_>,
+    host: &JClass<'_>,
+    method: &JNIStr,
+    sig: impl AsRef<MethodSignature<'sig, 'sig_args>>,
+    args: &[JValue],
+    what: &str,
+) -> Result<Option<String>, QonversionError> {
+    let obj = env
+        .call_static_method(host, method, sig, args)
+        .map_err(|e| map_exception(env, e, what))?
+        .l()
+        .map_err(|e| QonversionError::Native {
+            message: format!("{what} returned unexpected type: {e}"),
+        })?;
+    host_string(
+        env,
+        obj,
+        &format!("{what} was not a String"),
+        "unknown native error",
+    )
 }
 
 fn host_string(
@@ -394,28 +459,6 @@ fn host_string(
             .try_to_string(env)
             .unwrap_or_else(|_| utf8_fallback.into()),
     ))
-}
-
-fn required_jstring(
-    env: &mut Env<'_>,
-    obj: JObject<'_>,
-    what: &str,
-) -> Result<String, QonversionError> {
-    if obj.is_null() {
-        return Err(QonversionError::Native {
-            message: format!("{what} returned null"),
-        });
-    }
-    let jstring = env
-        .cast_local::<JString>(obj)
-        .map_err(|e| QonversionError::Native {
-            message: format!("{what} did not return a String: {e}"),
-        })?;
-    jstring
-        .try_to_string(env)
-        .map_err(|e| QonversionError::Native {
-            message: format!("failed to read {what} string: {e}"),
-        })
 }
 
 fn map_exception(env: &mut Env<'_>, err: jni::errors::Error, what: &str) -> QonversionError {

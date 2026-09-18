@@ -49,8 +49,13 @@ object DioxusQonversionHost {
      */
     private const val SKIP_PREFLIGHT_MAIN_THREAD: String = "SKIP_PREFLIGHT_MAIN_THREAD"
 
+    /** Must match Rust `helpers::HOST_TIMEOUT_SENTINEL`. */
+    private const val HOST_TIMEOUT_SENTINEL: String = "dioxus_qonversion:timeout"
+
     private const val PLAY_STORE_PACKAGE = "com.android.vending"
     private const val STORE_PREFLIGHT_TIMEOUT_MS = 4000L
+    /** Matches Rust `DEFAULT_SDK_TIMEOUT` for the initialize main hop. */
+    private const val INIT_TIMEOUT_MS = 8000L
 
     private val screenFailedDelegate = object : NoCodesDelegate {
         override fun onActionFinishedExecuting(action: QAction) {
@@ -106,7 +111,7 @@ object DioxusQonversionHost {
         if (trimmed.isEmpty()) {
             return "project_key must not be empty"
         }
-        return runOnMainSync {
+        return runOnMainSync(INIT_TIMEOUT_MS) {
             try {
                 val environment = if (sandbox) QEnvironment.Sandbox else QEnvironment.Production
                 val qonversionConfig = QonversionConfig.Builder(
@@ -262,7 +267,7 @@ object DioxusQonversionHost {
      * @return JSON envelope (`ok:true` + id/context_key, or `ok:false` + error).
      */
     @JvmStatic
-    fun loadScreen(contextKey: String): String {
+    fun loadScreen(contextKey: String, timeoutMs: Long): String {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return encodeLoadScreenError("load_screen must not be called on the Android main thread", false)
         }
@@ -271,33 +276,29 @@ object DioxusQonversionHost {
             return encodeLoadScreenError("context_key must not be empty", false)
         }
 
-        val latch = CountDownLatch(1)
-        val envelope = AtomicReference(encodeLoadScreenError("load screen did not complete", false))
-        Handler(Looper.getMainLooper()).post {
+        return awaitOnMain(
+            timeoutMs,
+            encodeLoadScreenError("load screen timed out", false, timedOut = true),
+        ) { complete ->
             try {
                 NoCodes.shared.loadScreen(trimmed, object : NoCodesScreenLoadCallback {
                     override fun onSuccess(screen: QNoCodeScreen) {
-                        envelope.set(encodeLoadScreenSuccess(screen))
-                        latch.countDown()
+                        complete(encodeLoadScreenSuccess(screen))
                     }
 
                     override fun onError(error: NoCodesError) {
-                        envelope.set(
+                        complete(
                             encodeLoadScreenError(
                                 error.toString(),
                                 error.code == ErrorCode.ScreenNotFound,
                             ),
                         )
-                        latch.countDown()
                     }
                 })
             } catch (t: Throwable) {
-                envelope.set(encodeLoadScreenError(t.message ?: t.toString(), false))
-                latch.countDown()
+                complete(encodeLoadScreenError(t.message ?: t.toString(), false))
             }
         }
-        latch.await()
-        return envelope.get()
     }
 
     /**
@@ -310,7 +311,7 @@ object DioxusQonversionHost {
      * @return `null` on success, or an error description on failure.
      */
     @JvmStatic
-    fun identify(userId: String): String? {
+    fun identify(userId: String, timeoutMs: Long): String? {
         val trimmed = userId.trim()
         if (trimmed.isEmpty()) {
             return "user_id must not be empty"
@@ -319,27 +320,21 @@ object DioxusQonversionHost {
             return "identify must not be called on the Android main thread"
         }
 
-        val latch = CountDownLatch(1)
-        val errorRef = AtomicReference<String?>(null)
-        Handler(Looper.getMainLooper()).post {
+        return awaitOnMain(timeoutMs, HOST_TIMEOUT_SENTINEL) { complete ->
             try {
                 Qonversion.shared.identify(trimmed, object : QonversionUserCallback {
                     override fun onSuccess(user: QUser) {
-                        latch.countDown()
+                        complete(null)
                     }
 
                     override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
-                        errorRef.set(qError.description ?: qError.toString())
-                        latch.countDown()
+                        complete(qError.description ?: qError.toString())
                     }
                 })
             } catch (t: Throwable) {
-                errorRef.set(t.message ?: t.toString())
-                latch.countDown()
+                complete(t.message ?: t.toString())
             }
         }
-        latch.await()
-        return errorRef.get()
     }
 
     /**
@@ -352,27 +347,24 @@ object DioxusQonversionHost {
      * @return JSON envelope string (`ok:true` + payload, or `ok:false` + error). Never null.
      */
     @JvmStatic
-    fun remoteConfig(contextKey: String?): String {
+    fun remoteConfig(contextKey: String?, timeoutMs: Long): String {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return encodeRemoteConfigError("remote_config must not be called on the Android main thread")
         }
 
         val key = contextKey?.trim()?.takeIf { it.isNotEmpty() }
-        val latch = CountDownLatch(1)
-        val envelope = AtomicReference(encodeRemoteConfigError("remote config did not complete"))
-        Handler(Looper.getMainLooper()).post {
+        return awaitOnMain(
+            timeoutMs,
+            encodeRemoteConfigError("remote config timed out", timedOut = true),
+        ) { complete ->
             try {
                 val callback = object : QonversionRemoteConfigCallback {
                     override fun onSuccess(remoteConfig: QRemoteConfig) {
-                        envelope.set(encodeRemoteConfigSuccess(remoteConfig))
-                        latch.countDown()
+                        complete(encodeRemoteConfigSuccess(remoteConfig))
                     }
 
                     override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
-                        envelope.set(
-                            encodeRemoteConfigError(qError.description ?: qError.toString()),
-                        )
-                        latch.countDown()
+                        complete(encodeRemoteConfigError(qError.description ?: qError.toString()))
                     }
                 }
                 if (key == null) {
@@ -381,12 +373,9 @@ object DioxusQonversionHost {
                     Qonversion.shared.remoteConfig(key, callback)
                 }
             } catch (t: Throwable) {
-                envelope.set(encodeRemoteConfigError(t.message ?: t.toString()))
-                latch.countDown()
+                complete(encodeRemoteConfigError(t.message ?: t.toString()))
             }
         }
-        latch.await()
-        return envelope.get()
     }
 
     /**
@@ -397,8 +386,8 @@ object DioxusQonversionHost {
      * @return `null` on success, or an error description on failure.
      */
     @JvmStatic
-    fun logout(): String? {
-        return runOnMainSync {
+    fun logout(timeoutMs: Long): String? {
+        return runOnMainSync(timeoutMs) {
             try {
                 Qonversion.shared.logout()
                 null
@@ -470,17 +459,39 @@ object DioxusQonversionHost {
             upper.contains("IN-APP BILLING API VERSION")
     }
 
-    private fun runOnMainSync(block: () -> String?): String? {
+    private fun runOnMainSync(timeoutMs: Long, block: () -> String?): String? {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return block()
         }
-        val latch = CountDownLatch(1)
-        val result = AtomicReference<String?>()
-        Handler(Looper.getMainLooper()).post {
-            result.set(block())
-            latch.countDown()
+        return awaitOnMain(timeoutMs, HOST_TIMEOUT_SENTINEL) { complete ->
+            complete(block())
         }
-        latch.await()
+    }
+
+    private fun <T> awaitOnMain(timeoutMs: Long, timeoutValue: T, work: (complete: (T) -> Unit) -> Unit): T {
+        val latch = CountDownLatch(1)
+        val finished = AtomicBoolean(false)
+        val result = AtomicReference(timeoutValue)
+        val complete: (T) -> Unit = { value ->
+            if (finished.compareAndSet(false, true)) {
+                result.set(value)
+                latch.countDown()
+            }
+        }
+        Handler(Looper.getMainLooper()).post {
+            if (finished.get()) {
+                return@post
+            }
+            try {
+                work(complete)
+            } catch (t: Throwable) {
+                android.util.Log.e("DioxusQonversion", "awaitOnMain work failed: ${t.message}", t)
+                complete(timeoutValue)
+            }
+        }
+        if (!latch.await(timeoutMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)) {
+            complete(timeoutValue)
+        }
         return result.get()
     }
 
@@ -542,18 +553,28 @@ object DioxusQonversionHost {
         }
     }
 
-    private fun encodeLoadScreenError(message: String, screenNotFound: Boolean): String {
+    private fun encodeLoadScreenError(
+        message: String,
+        screenNotFound: Boolean,
+        timedOut: Boolean = false,
+    ): String {
         val root = JSONObject()
         root.put("ok", false)
         root.put("error", message)
         root.put("screen_not_found", screenNotFound)
+        if (timedOut) {
+            root.put("timed_out", true)
+        }
         return root.toString()
     }
 
-    private fun encodeRemoteConfigError(message: String): String {
+    private fun encodeRemoteConfigError(message: String, timedOut: Boolean = false): String {
         val root = JSONObject()
         root.put("ok", false)
         root.put("error", message)
+        if (timedOut) {
+            root.put("timed_out", true)
+        }
         return root.toString()
     }
 

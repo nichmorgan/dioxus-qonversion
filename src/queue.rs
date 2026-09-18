@@ -1,8 +1,7 @@
-//! Serial executor and timeouts for SDK identity / Remote Config / load-screen
-//! calls.
+//! Serial executor for identify / Remote Config / load_screen.
 //!
-//! [`show_screen`](crate::show_screen) stays fire-and-present and does **not**
-//! go through this queue.
+//! [`show_screen`](crate::show_screen) is fire-and-present and skips this queue.
+//! Timeout and overlap: [`QonversionError::Timeout`].
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -13,10 +12,6 @@ use std::time::Duration;
 use crate::error::QonversionError;
 
 /// Default wait for a queued SDK call before returning [`QonversionError::Timeout`].
-///
-/// Timing out does **not** cancel native work — the serial worker still finishes
-/// the in-flight call before starting the next one. Apps choose fail-open vs
-/// fail-closed when they see a timeout.
 pub const DEFAULT_SDK_TIMEOUT: Duration = Duration::from_secs(8);
 
 static SDK_TIMEOUT: Mutex<Duration> = Mutex::new(DEFAULT_SDK_TIMEOUT);
@@ -58,16 +53,26 @@ fn job_sender() -> mpsc::Sender<Job> {
         .clone()
 }
 
+/// Milliseconds to pass to native timed waits (same value as [`sdk_timeout`]).
+#[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
+pub(crate) fn timeout_ms() -> i64 {
+    i64::try_from(sdk_timeout().as_millis()).unwrap_or(i64::MAX)
+}
+
 /// Run `work` on the single SDK worker thread.
 ///
 /// Waits up to [`sdk_timeout`] for a result. On timeout returns
-/// [`QonversionError::Timeout`] without cancelling `work`; the worker keeps
-/// the slot until `work` returns so later queued calls do not overlap.
+/// [`QonversionError::Timeout`] without cancelling `work`. The native wait
+/// uses the same budget so the worker is freed when the SDK callback never
+/// arrives. Refuses [`QonversionError::MainThread`] if invoked on the UI thread.
 pub(crate) fn run_serial<T, F>(work: F) -> Result<T, QonversionError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, QonversionError> + Send + 'static,
 {
+    if crate::native::is_main_thread() {
+        return Err(QonversionError::MainThread);
+    }
     let timeout = sdk_timeout();
     let (reply_tx, reply_rx) = mpsc::channel();
     job_sender()

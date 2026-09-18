@@ -20,11 +20,14 @@ pub struct LoadedScreen {
 /// SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`]. Blocking wait: call from
 /// Dioxus `spawn` / a background thread; avoid the UI thread.
 ///
+/// Official `loadScreen` does not flush pending user properties, so targeting
+/// can differ slightly from [`crate::show_screen`].
+///
 /// [`QonversionError::ScreenNotFound`] means the dashboard has no screen for
 /// this key. Other SDK failures are [`QonversionError::Native`] or
 /// [`QonversionError::Timeout`].
 pub fn load_screen(context_key: &str) -> Result<LoadedScreen, QonversionError> {
-    let context_key = crate::helpers::require_context_key(context_key)?.to_string();
+    let context_key = crate::helpers::require_non_empty("context_key", context_key)?.to_string();
     init::require_initialized()?;
     queue::run_serial(move || {
         let envelope = native::load_screen(&context_key)?;
@@ -48,7 +51,11 @@ pub(crate) fn parse_envelope(
     let id = object
         .get("id")
         .and_then(Value::as_str)
-        .unwrap_or("")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| QonversionError::Native {
+            message: "load screen envelope missing id".into(),
+        })?
         .to_string();
     let context_key = object
         .get("context_key")
@@ -65,11 +72,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_id_is_ok() {
-        let screen = parse_envelope(r#"{"ok":true,"id":"","context_key":"paywall"}"#, "paywall")
-            .expect("empty id");
-        assert_eq!(screen.id, "");
-        assert_eq!(screen.context_key, "paywall");
+    fn empty_id_is_error() {
+        let err = parse_envelope(r#"{"ok":true,"id":"","context_key":"paywall"}"#, "paywall")
+            .expect_err("empty id");
+        assert!(matches!(err, QonversionError::Native { .. }));
+    }
+
+    #[test]
+    fn missing_id_is_error() {
+        let err = parse_envelope(r#"{"ok":true,"context_key":"paywall"}"#, "paywall")
+            .expect_err("missing id");
+        assert!(matches!(err, QonversionError::Native { .. }));
     }
 
     #[test]

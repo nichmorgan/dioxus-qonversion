@@ -27,10 +27,19 @@ pub enum QonversionError {
     #[error("native Qonversion host missing: {0}")]
     HostMissing(String),
 
+    /// A queued SDK call was invoked on the Android / iOS UI thread.
+    ///
+    /// Queued APIs (`identify`, `logout`, `remote_config`, `load_screen`) post
+    /// to the main thread and wait. Calling them from that thread deadlocks.
+    /// Use Dioxus `spawn` / a background thread.
+    #[error("Qonversion SDK call must not run on the UI thread")]
+    MainThread,
+
     /// A queued SDK call exceeded [`crate::sdk_timeout`].
     ///
-    /// Timing out does **not** cancel native work — it only unblocks the Rust
-    /// caller. Fail-open vs fail-closed is app policy.
+    /// Timing out does **not** cancel native work. The serial worker is freed
+    /// after the native wait expires, so a later queued call may overlap
+    /// still-running SDK work. Fail-open vs fail-closed is app policy.
     #[error("Qonversion SDK call timed out after {timeout:?}")]
     Timeout { timeout: Duration },
 

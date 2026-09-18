@@ -12,14 +12,9 @@ use crate::queue;
 ///
 /// Runs on the serial SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`] (see
 /// [`crate::set_sdk_timeout`]). Blocking wait: safe to call from Dioxus `spawn`
-/// / a background thread; avoid the UI thread.
+/// / a background thread. The UI thread returns [`QonversionError::MainThread`].
 pub fn identify(user_id: &str) -> Result<(), QonversionError> {
-    let user_id = user_id.trim();
-    if user_id.is_empty() {
-        return Err(QonversionError::InvalidConfig(
-            "user_id must not be empty".into(),
-        ));
-    }
+    let user_id = crate::helpers::require_non_empty("user_id", user_id)?;
     init::require_initialized()?;
     let user_id = user_id.to_string();
     queue::run_serial(move || native::identify(&user_id))

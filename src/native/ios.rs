@@ -41,8 +41,10 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
 pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
     let host = host_class()?;
     let key = nsstring(context_key)?;
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let envelope: *mut Object = unsafe { msg_send![host, loadScreenWithContextKey: key] };
+    let envelope: *mut Object =
+        unsafe { msg_send![host, loadScreenWithContextKey: key timeoutMs: timeout_ms] };
     nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
         message: "DioxusQonversionHost.loadScreenWithContextKey returned nil".into(),
     })
@@ -51,16 +53,18 @@ pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> 
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
     let host = host_class()?;
     let id = nsstring(user_id)?;
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let err: *mut Object = unsafe { msg_send![host, identifyWithUserId: id] };
+    let err: *mut Object = unsafe { msg_send![host, identifyWithUserId: id timeoutMs: timeout_ms] };
 
     map_host_result(err)
 }
 
 pub(crate) fn logout() -> Result<(), QonversionError> {
     let host = host_class()?;
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let err: *mut Object = unsafe { msg_send![host, logout] };
+    let err: *mut Object = unsafe { msg_send![host, logoutWithTimeoutMs: timeout_ms] };
 
     map_host_result(err)
 }
@@ -71,11 +75,18 @@ pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, Qonvers
         Some(key) => nsstring(key)?,
         None => std::ptr::null_mut(),
     };
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let envelope: *mut Object = unsafe { msg_send![host, remoteConfigWithContextKey: key] };
+    let envelope: *mut Object =
+        unsafe { msg_send![host, remoteConfigWithContextKey: key timeoutMs: timeout_ms] };
     nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
         message: "DioxusQonversionHost.remoteConfigWithContextKey returned nil".into(),
     })
+}
+
+pub(crate) fn is_main_thread() -> bool {
+    let is_main: bool = unsafe { msg_send![class!(NSThread), isMainThread] };
+    is_main
 }
 
 fn host_class() -> Result<&'static Class, QonversionError> {
@@ -91,7 +102,7 @@ fn map_host_result(err: *mut Object) -> Result<(), QonversionError> {
         Ok(())
     } else {
         let message = nsstring_to_rust(err).unwrap_or_else(|| "unknown native error".into());
-        Err(QonversionError::Native { message })
+        Err(crate::helpers::map_host_error_message(message))
     }
 }
 

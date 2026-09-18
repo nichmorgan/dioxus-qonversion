@@ -61,7 +61,7 @@ identify(firebase_uid)?;
 logout()?;
 ```
 
-Both `identify` / `logout`, Remote Config, and `load_screen` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker still finishes before the next queued call. `show_screen` stays fire-and-present and is **not** on this queue.
+Both `identify` / `logout`, Remote Config, and `load_screen` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker is freed after the wait expires, so a later queued call may overlap still-running SDK work. Calling these from the UI thread returns `QonversionError::MainThread`. `show_screen` stays fire-and-present and is **not** on this queue.
 
 If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library also does not memoize Remote Config; clear any app-side caches yourself after `logout`.
 
@@ -84,7 +84,7 @@ Same **serial SDK queue** and **8s** timeout as `identify` / `logout`. An empty 
 
 ## Load a No-Codes screen (optional)
 
-`load_screen` is Qonversion’s **ask-first** `loadScreen`: it waits until the screen is in cache (or fails) **before** anything is presented. A success warms the shared screens cache so the next `show_screen` with the same key can render without the SDK loading view. It is **not** a prerequisite for `show_screen`.
+`load_screen` is Qonversion’s **ask-first** `loadScreen`: it waits until the screen is in cache (or fails) **before** anything is presented. A success warms the shared screens cache so the next `show_screen` with the same key can render without the SDK loading view. It is **not** a prerequisite for `show_screen`. Official `loadScreen` does not flush pending user properties, so targeting can differ slightly from `show_screen`.
 
 Screens marked **preloadable** in the No-Codes Builder (Settings → General) are fetched automatically at SDK init — that path needs no crate API.
 
@@ -135,7 +135,7 @@ set_screen_failed_handler(|err| match err {
 
 set_screen_event_handler(|event| match event {
     ScreenEvent::ActionFinished { kind: ScreenActionKind::Purchase } => {
-        /* buy succeeded — refresh app status */
+        /* buy succeeded — refresh app status; queued APIs are safe here */
     }
     ScreenEvent::ActionFinished { kind: ScreenActionKind::Restore } => {
         /* restore-from-paywall succeeded */

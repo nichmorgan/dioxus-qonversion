@@ -66,8 +66,8 @@ public class DioxusQonversionHost: NSObject {
     /// Posts to the main actor and **waits**. Must not be invoked on the main thread.
     ///
     /// - Returns: JSON envelope (`ok:true` + id/context_key, or `ok:false` + error).
-    @objc(loadScreenWithContextKey:)
-    public static func loadScreen(contextKey: String) -> String {
+    @objc(loadScreenWithContextKey:timeoutMs:)
+    public static func loadScreen(contextKey: String, timeoutMs: Int64) -> String {
         if Thread.isMainThread {
             return encodeLoadScreenError("load_screen must not be called on the main thread", screenNotFound: false)
         }
@@ -76,19 +76,19 @@ public class DioxusQonversionHost: NSObject {
             return encodeLoadScreenError("context_key must not be empty", screenNotFound: false)
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var envelope = encodeLoadScreenError("load screen did not complete", screenNotFound: false)
-        Task { @MainActor in
-            do {
-                let screen = try await NoCodes.shared.loadScreen(withContextKey: trimmed)
-                envelope = encodeLoadScreenSuccess(screen)
-            } catch {
-                envelope = encodeLoadScreenFailure(error)
+        return awaitOnMain(
+            timeoutMs: timeoutMs,
+            timeoutValue: encodeLoadScreenError("load screen timed out", screenNotFound: false, timedOut: true)
+        ) { complete in
+            Task { @MainActor in
+                do {
+                    let screen = try await NoCodes.shared.loadScreen(withContextKey: trimmed)
+                    complete(encodeLoadScreenSuccess(screen))
+                } catch {
+                    complete(encodeLoadScreenFailure(error))
+                }
             }
-            semaphore.signal()
         }
-        semaphore.wait()
-        return envelope
     }
 
     /// Identify the Qonversion user with a stable app user id.
@@ -98,8 +98,8 @@ public class DioxusQonversionHost: NSObject {
     /// The Rust serial worker always calls this off-main.
     ///
     /// - Returns: `nil` on success, or an error description string on failure.
-    @objc(identifyWithUserId:)
-    public static func identify(userId: String) -> String? {
+    @objc(identifyWithUserId:timeoutMs:)
+    public static func identify(userId: String, timeoutMs: Int64) -> String? {
         let trimmed = userId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return "user_id must not be empty"
@@ -108,18 +108,15 @@ public class DioxusQonversionHost: NSObject {
             return "identify must not be called on the main thread"
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var errorMessage: String?
-        DispatchQueue.main.async {
+        return awaitOnMain(timeoutMs: timeoutMs, timeoutValue: hostTimeoutSentinel as String?) { complete in
             Qonversion.shared().identify(trimmed) { _, error in
                 if let error {
-                    errorMessage = error.localizedDescription
+                    complete(error.localizedDescription)
+                } else {
+                    complete(nil)
                 }
-                semaphore.signal()
             }
         }
-        semaphore.wait()
-        return errorMessage
     }
 
     /// Fetch Remote Config for `contextKey`, or the empty context key when `contextKey` is nil/blank.
@@ -129,8 +126,8 @@ public class DioxusQonversionHost: NSObject {
     /// calls this off-main.
     ///
     /// - Returns: JSON envelope string (`ok:true` + payload, or `ok:false` + error). Never nil.
-    @objc(remoteConfigWithContextKey:)
-    public static func remoteConfig(contextKey: String?) -> String {
+    @objc(remoteConfigWithContextKey:timeoutMs:)
+    public static func remoteConfig(contextKey: String?, timeoutMs: Int64) -> String {
         if Thread.isMainThread {
             return encodeRemoteConfigError("remote_config must not be called on the main thread")
         }
@@ -138,18 +135,18 @@ public class DioxusQonversionHost: NSObject {
         let trimmed = contextKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = (trimmed?.isEmpty == false) ? trimmed : nil
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var envelope = encodeRemoteConfigError("remote config did not complete")
-        DispatchQueue.main.async {
+        return awaitOnMain(
+            timeoutMs: timeoutMs,
+            timeoutValue: encodeRemoteConfigError("remote config timed out", timedOut: true)
+        ) { complete in
             let handler: (Qonversion.RemoteConfig?, Error?) -> Void = { config, error in
                 if let error {
-                    envelope = encodeRemoteConfigError(error.localizedDescription)
+                    complete(encodeRemoteConfigError(error.localizedDescription))
                 } else if let config {
-                    envelope = encodeRemoteConfigSuccess(config)
+                    complete(encodeRemoteConfigSuccess(config))
                 } else {
-                    envelope = encodeRemoteConfigError("remote config returned no data")
+                    complete(encodeRemoteConfigError("remote config returned no data"))
                 }
-                semaphore.signal()
             }
             if let key {
                 Qonversion.shared().remoteConfig(contextKey: key, completion: handler)
@@ -158,8 +155,6 @@ public class DioxusQonversionHost: NSObject {
                 Qonversion.shared().remoteConfig(handler)
             }
         }
-        semaphore.wait()
-        return envelope
     }
 
     /// Clear the Qonversion user session.
@@ -167,25 +162,44 @@ public class DioxusQonversionHost: NSObject {
     /// Hops to the main queue and **waits**.
     ///
     /// - Returns: `nil` on success, or an error description string on failure.
-    @objc(logout)
-    public static func logout() -> String? {
-        return runOnMainSync {
+    @objc(logoutWithTimeoutMs:)
+    public static func logout(timeoutMs: Int64) -> String? {
+        if Thread.isMainThread {
             Qonversion.shared().logout()
             return nil
         }
+        return awaitOnMain(timeoutMs: timeoutMs, timeoutValue: hostTimeoutSentinel as String?) { complete in
+            Qonversion.shared().logout()
+            complete(nil)
+        }
     }
 
-    private static func runOnMainSync<T>(_ block: () -> T) -> T {
-        if Thread.isMainThread {
-            return block()
-        }
-        var result: T!
+    private static let hostTimeoutSentinel = "dioxus_qonversion:timeout"
+
+    private static func awaitOnMain<T>(
+        timeoutMs: Int64,
+        timeoutValue: T,
+        work: @escaping (@escaping (T) -> Void) -> Void
+    ) -> T {
         let semaphore = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async {
-            result = block()
+        let lock = NSLock()
+        var finished = false
+        var result = timeoutValue
+        let complete: (T) -> Void = { value in
+            lock.lock()
+            defer { lock.unlock() }
+            guard !finished else { return }
+            finished = true
+            result = value
             semaphore.signal()
         }
-        semaphore.wait()
+        DispatchQueue.main.async {
+            work(complete)
+        }
+        let waitMs = timeoutMs < 0 ? 0 : timeoutMs
+        if semaphore.wait(timeout: .now() + .milliseconds(Int(waitMs))) == .timedOut {
+            complete(timeoutValue)
+        }
         return result
     }
 
@@ -205,8 +219,12 @@ public class DioxusQonversionHost: NSObject {
         return stringifyEnvelope(dict)
     }
 
-    private static func encodeRemoteConfigError(_ message: String) -> String {
-        stringifyEnvelope(["ok": false, "error": message])
+    private static func encodeRemoteConfigError(_ message: String, timedOut: Bool = false) -> String {
+        var dict: [String: Any] = ["ok": false, "error": message]
+        if timedOut {
+            dict["timed_out"] = true
+        }
+        return stringifyEnvelope(dict)
     }
 
     private static func encodeLoadScreenSuccess(_ screen: NoCodesScreen) -> String {
@@ -227,12 +245,20 @@ public class DioxusQonversionHost: NSObject {
         return encodeLoadScreenError(error.localizedDescription, screenNotFound: false)
     }
 
-    private static func encodeLoadScreenError(_ message: String, screenNotFound: Bool) -> String {
-        stringifyEnvelope([
+    private static func encodeLoadScreenError(
+        _ message: String,
+        screenNotFound: Bool,
+        timedOut: Bool = false
+    ) -> String {
+        var dict: [String: Any] = [
             "ok": false,
             "error": message,
             "screen_not_found": screenNotFound,
-        ])
+        ]
+        if timedOut {
+            dict["timed_out"] = true
+        }
+        return stringifyEnvelope(dict)
     }
 
     private static func encodeSource(_ source: Qonversion.RemoteConfigurationSource) -> [String: Any] {

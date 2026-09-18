@@ -48,3 +48,8 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
     sys::remote_config(context_key)
 }
+
+/// True when the current thread is the Android main looper or iOS main thread.
+pub(crate) fn is_main_thread() -> bool {
+    sys::is_main_thread()
+}
