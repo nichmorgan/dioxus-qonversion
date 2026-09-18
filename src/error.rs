@@ -34,6 +34,15 @@ pub enum QonversionError {
     #[error("Qonversion SDK call timed out after {timeout:?}")]
     Timeout { timeout: Duration },
 
+    /// Native store billing is not connected.
+    ///
+    /// Typical causes: no Google account signed into Play services, Play Store
+    /// missing, or BillingClient `SERVICE_DISCONNECTED` / `BILLING_UNAVAILABLE`.
+    /// Distinct from [`Self::Native`] — apps should match this variant and own
+    /// fallback UI (for example opening the store).
+    #[error("native store billing is unavailable")]
+    StoreUnavailable,
+
     /// Exception / error forwarded from the native SDK.
     #[error("native Qonversion error: {message}")]
     Native { message: String },

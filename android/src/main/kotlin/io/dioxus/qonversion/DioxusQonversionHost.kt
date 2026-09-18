@@ -2,8 +2,13 @@ package io.dioxus.qonversion
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
+import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.PendingPurchasesParams
 import com.qonversion.android.sdk.Qonversion
 import com.qonversion.android.sdk.QonversionConfig
 import com.qonversion.android.sdk.dto.QEnvironment
@@ -11,14 +16,19 @@ import com.qonversion.android.sdk.dto.QLaunchMode
 import com.qonversion.android.sdk.dto.QRemoteConfig
 import com.qonversion.android.sdk.dto.QRemoteConfigurationSource
 import com.qonversion.android.sdk.dto.QUser
+import com.qonversion.android.sdk.dto.QonversionErrorCode
 import com.qonversion.android.sdk.dto.experiments.QExperiment
 import com.qonversion.android.sdk.listeners.QonversionRemoteConfigCallback
 import com.qonversion.android.sdk.listeners.QonversionUserCallback
 import io.qonversion.nocodes.NoCodes
 import io.qonversion.nocodes.NoCodesConfig
+import io.qonversion.nocodes.error.NoCodesError
+import io.qonversion.nocodes.interfaces.NoCodesDelegate
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -28,6 +38,32 @@ import java.util.concurrent.atomic.AtomicReference
  * This Gradle library module already depends on `io.qonversion:no-codes`.
  */
 object DioxusQonversionHost {
+    /**
+     * Returned when [ensureStoreAvailable] is invoked on the main looper.
+     * Rust treats this as skip-preflight (not store-unavailable) so UI-thread
+     * `show_screen` still presents.
+     */
+    private const val SKIP_PREFLIGHT_MAIN_THREAD: String = "SKIP_PREFLIGHT_MAIN_THREAD"
+
+    private const val PLAY_STORE_PACKAGE = "com.android.vending"
+    private const val STORE_PREFLIGHT_TIMEOUT_MS = 4000L
+
+    private val screenFailedDelegate = object : NoCodesDelegate {
+        override fun onScreenFailedToLoad(error: NoCodesError) {
+            val storeUnavailable = isStoreUnavailable(error)
+            try {
+                notifyScreenFailed(storeUnavailable, error.toString())
+            } catch (t: Throwable) {
+                android.util.Log.e("DioxusQonversion", "notifyScreenFailed failed: ${t.message}", t)
+            }
+            try {
+                NoCodes.shared.close()
+            } catch (t: Throwable) {
+                android.util.Log.e("DioxusQonversion", "NoCodes.close failed: ${t.message}", t)
+            }
+        }
+    }
+
     /**
      * Initialize Qonversion (Subscription Management) and No-Codes.
      *
@@ -53,7 +89,9 @@ object DioxusQonversionHost {
                     .build()
                 Qonversion.initialize(qonversionConfig)
 
-                val noCodesConfig = NoCodesConfig.Builder(context.applicationContext, trimmed).build()
+                val noCodesConfig = NoCodesConfig.Builder(context.applicationContext, trimmed)
+                    .setDelegate(screenFailedDelegate)
+                    .build()
                 NoCodes.initialize(noCodesConfig)
                 null
             } catch (t: Throwable) {
@@ -61,6 +99,95 @@ object DioxusQonversionHost {
             }
         }
     }
+
+    /**
+     * Probe Play Billing before presenting a No-Codes screen.
+     *
+     * @return `null` if BillingClient connected with `OK`;
+     * [SKIP_PREFLIGHT_MAIN_THREAD] if called on the main looper (must not latch);
+     * any other string if the store is unavailable.
+     */
+    @JvmStatic
+    fun ensureStoreAvailable(context: Context): String? {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return SKIP_PREFLIGHT_MAIN_THREAD
+        }
+        if (!isPlayStoreInstalled(context)) {
+            return "Play Store is not installed"
+        }
+
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<String?>(null)
+        val finished = AtomicBoolean(false)
+        val clientRef = AtomicReference<BillingClient?>(null)
+        val appContext = context.applicationContext
+
+        Handler(Looper.getMainLooper()).post {
+            if (finished.get()) {
+                return@post
+            }
+            try {
+                val billingClient = BillingClient.newBuilder(appContext)
+                    .setListener { _, _ -> }
+                    .enablePendingPurchases(
+                        PendingPurchasesParams.newBuilder().enableOneTimeProducts().build(),
+                    )
+                    .build()
+                if (finished.get()) {
+                    endBillingClient(billingClient)
+                    return@post
+                }
+                clientRef.set(billingClient)
+                if (finished.get()) {
+                    endBillingClient(clientRef.getAndSet(null))
+                    return@post
+                }
+                billingClient.startConnection(object : BillingClientStateListener {
+                    override fun onBillingSetupFinished(billingResult: BillingResult) {
+                        val code = billingResult.responseCode
+                        val unavailable = when (code) {
+                            BillingClient.BillingResponseCode.OK -> null
+                            else -> {
+                                val debug = billingResult.debugMessage ?: ""
+                                "billing unavailable: $code $debug"
+                            }
+                        }
+                        completeStoreProbe(clientRef, result, finished, latch, unavailable)
+                    }
+
+                    override fun onBillingServiceDisconnected() {
+                        completeStoreProbe(
+                            clientRef,
+                            result,
+                            finished,
+                            latch,
+                            "billing unavailable: SERVICE_DISCONNECTED",
+                        )
+                    }
+                })
+            } catch (t: Throwable) {
+                completeStoreProbe(clientRef, result, finished, latch, t.message ?: t.toString())
+            }
+        }
+
+        if (!latch.await(STORE_PREFLIGHT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            completeStoreProbe(
+                clientRef,
+                result,
+                finished,
+                latch,
+                "billing connection timed out",
+            )
+        }
+        return result.get()
+    }
+
+    /**
+     * JNI target registered from Rust during initialize.
+     * `storeUnavailable` is true for Play Billing / SERVICE_DISCONNECTED failures.
+     */
+    @JvmStatic
+    external fun notifyScreenFailed(storeUnavailable: Boolean, message: String)
 
     /**
      * Present a No-Codes screen by context key (fire-and-present).
@@ -196,6 +323,68 @@ object DioxusQonversionHost {
                 t.message ?: t.toString()
             }
         }
+    }
+
+    private fun completeStoreProbe(
+        clientRef: AtomicReference<BillingClient?>,
+        result: AtomicReference<String?>,
+        finished: AtomicBoolean,
+        latch: CountDownLatch,
+        unavailable: String?,
+    ) {
+        if (!finished.compareAndSet(false, true)) {
+            return
+        }
+        result.set(unavailable)
+        endBillingClient(clientRef.get())
+        latch.countDown()
+    }
+
+    private fun endBillingClient(client: BillingClient?) {
+        if (client == null) {
+            return
+        }
+        try {
+            client.endConnection()
+        } catch (t: Throwable) {
+            android.util.Log.e("DioxusQonversion", "BillingClient.endConnection failed: ${t.message}", t)
+        }
+    }
+
+    private fun isPlayStoreInstalled(context: Context): Boolean {
+        return try {
+            context.packageManager.getPackageInfo(PLAY_STORE_PACKAGE, 0)
+            true
+        } catch (_: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+
+    private fun isStoreUnavailable(error: NoCodesError): Boolean {
+        val qError = error.qonversionError
+        if (qError != null) {
+            when (qError.code) {
+                QonversionErrorCode.PlayStoreError,
+                QonversionErrorCode.BillingUnavailable,
+                -> return true
+                else -> Unit
+            }
+            if (looksLikeStoreFailure("${qError.additionalMessage} ${qError.description}")) {
+                return true
+            }
+        }
+        return looksLikeStoreFailure(
+            "${error.code} ${error.details ?: ""} ${error.cause ?: ""} $error",
+        )
+    }
+
+    private fun looksLikeStoreFailure(text: String): Boolean {
+        val upper = text.uppercase()
+        return upper.contains("PLAYSTOREERROR") ||
+            upper.contains("BILLINGUNAVAILABLE") ||
+            upper.contains("BILLING_UNAVAILABLE") ||
+            upper.contains("SERVICE_DISCONNECTED") ||
+            upper.contains("IN-APP BILLING API VERSION")
     }
 
     private fun runOnMainSync(block: () -> String?): String? {

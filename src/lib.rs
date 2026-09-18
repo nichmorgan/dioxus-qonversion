@@ -27,16 +27,16 @@ pub use remote_config::{
     RemoteConfig, RemoteConfigurationAssignmentType, RemoteConfigurationSource,
     RemoteConfigurationSourceType,
 };
-pub use screen::show_screen;
+pub use screen::{clear_screen_failed_handler, set_screen_failed_handler, show_screen};
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        identify, initialize, is_initialized, logout, remote_config, remote_config_default,
-        sdk_timeout, set_sdk_timeout, show_screen, Environment, Experiment, ExperimentGroup,
-        ExperimentGroupType, InitConfig, LaunchMode, QonversionError, RemoteConfig,
-        RemoteConfigurationAssignmentType, RemoteConfigurationSource,
-        RemoteConfigurationSourceType, DEFAULT_SDK_TIMEOUT,
+        clear_screen_failed_handler, identify, initialize, is_initialized, logout, remote_config,
+        remote_config_default, sdk_timeout, set_screen_failed_handler, set_sdk_timeout,
+        show_screen, Environment, Experiment, ExperimentGroup, ExperimentGroupType, InitConfig,
+        LaunchMode, QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
+        RemoteConfigurationSource, RemoteConfigurationSourceType, DEFAULT_SDK_TIMEOUT,
     };
 }
 
@@ -116,6 +116,18 @@ mod tests {
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
         assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn store_unavailable_is_matchable_and_distinct_from_native() {
+        let err = QonversionError::StoreUnavailable;
+        assert_ne!(
+            err,
+            QonversionError::Native {
+                message: "PlayStoreError".into()
+            }
+        );
+        assert_eq!(err.to_string(), "native store billing is unavailable");
     }
 
     #[test]
