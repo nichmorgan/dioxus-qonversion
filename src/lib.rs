@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod identity;
 mod init;
+mod load_screen;
 mod native;
 mod queue;
 mod remote_config;
@@ -21,22 +22,28 @@ pub use config::{Environment, InitConfig, LaunchMode};
 pub use error::QonversionError;
 pub use identity::{identify, logout};
 pub use init::{initialize, is_initialized};
+pub use load_screen::{load_screen, LoadedScreen};
 pub use queue::{sdk_timeout, set_sdk_timeout, DEFAULT_SDK_TIMEOUT};
 pub use remote_config::{
     remote_config, remote_config_default, Experiment, ExperimentGroup, ExperimentGroupType,
     RemoteConfig, RemoteConfigurationAssignmentType, RemoteConfigurationSource,
     RemoteConfigurationSourceType,
 };
-pub use screen::{clear_screen_failed_handler, set_screen_failed_handler, show_screen};
+pub use screen::{
+    clear_screen_event_handler, clear_screen_failed_handler, set_screen_event_handler,
+    set_screen_failed_handler, show_screen, ScreenActionKind, ScreenEvent,
+};
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        clear_screen_failed_handler, identify, initialize, is_initialized, logout, remote_config,
-        remote_config_default, sdk_timeout, set_screen_failed_handler, set_sdk_timeout,
-        show_screen, Environment, Experiment, ExperimentGroup, ExperimentGroupType, InitConfig,
-        LaunchMode, QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
-        RemoteConfigurationSource, RemoteConfigurationSourceType, DEFAULT_SDK_TIMEOUT,
+        clear_screen_event_handler, clear_screen_failed_handler, identify, initialize,
+        is_initialized, load_screen, logout, remote_config, remote_config_default, sdk_timeout,
+        set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout, show_screen,
+        Environment, Experiment, ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode,
+        LoadedScreen, QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
+        RemoteConfigurationSource, RemoteConfigurationSourceType, ScreenActionKind, ScreenEvent,
+        DEFAULT_SDK_TIMEOUT,
     };
 }
 
@@ -128,6 +135,47 @@ mod tests {
             }
         );
         assert_eq!(err.to_string(), "native store billing is unavailable");
+    }
+
+    #[test]
+    fn screen_not_found_is_matchable_and_distinct_from_native() {
+        let err = QonversionError::ScreenNotFound;
+        assert_ne!(
+            err,
+            QonversionError::Native {
+                message: "ScreenNotFound".into()
+            }
+        );
+        assert_eq!(err.to_string(), "No-Codes screen not found for context key");
+    }
+
+    #[test]
+    fn load_screen_rejects_empty_context_key() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = load_screen("  ").expect_err("empty context key must fail");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn load_screen_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = load_screen("paywall").expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn load_screen_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = load_screen("paywall").expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
     }
 
     #[test]

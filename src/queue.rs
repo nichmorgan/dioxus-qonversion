@@ -1,4 +1,5 @@
-//! Serial executor and timeouts for SDK identity / Remote Config style calls.
+//! Serial executor and timeouts for SDK identity / Remote Config / load-screen
+//! calls.
 //!
 //! [`show_screen`](crate::show_screen) stays fire-and-present and does **not**
 //! go through this queue.

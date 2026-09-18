@@ -43,6 +43,14 @@ pub enum QonversionError {
     #[error("native store billing is unavailable")]
     StoreUnavailable,
 
+    /// No-Codes has no published screen for the given context key.
+    ///
+    /// Distinct from [`Self::Native`] (transient load failure) and
+    /// [`Self::Timeout`]. Show app-owned fallback UI; retrying the same key
+    /// will not help until the dashboard publishes a screen.
+    #[error("No-Codes screen not found for context key")]
+    ScreenNotFound,
+
     /// Exception / error forwarded from the native SDK.
     #[error("native Qonversion error: {message}")]
     Native { message: String },

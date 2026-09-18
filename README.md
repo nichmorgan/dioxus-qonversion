@@ -61,7 +61,7 @@ identify(firebase_uid)?;
 logout()?;
 ```
 
-Both `identify` / `logout` and Remote Config go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker still finishes before the next queued call. `show_screen` stays fire-and-present and is **not** on this queue.
+Both `identify` / `logout`, Remote Config, and `load_screen` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker still finishes before the next queued call. `show_screen` stays fire-and-present and is **not** on this queue.
 
 If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library also does not memoize Remote Config; clear any app-side caches yourself after `logout`.
 
@@ -82,6 +82,28 @@ let default = remote_config_default()?;
 
 Same **serial SDK queue** and **8s** timeout as `identify` / `logout`. An empty payload map is success; SDK failures are `QonversionError::Native` or `Timeout`. `source` and `experiment` are present when the SDK assigned this payload from a remote config or A/B experiment.
 
+## Load a No-Codes screen (optional)
+
+`load_screen` is Qonversion’s **ask-first** `loadScreen`: it waits until the screen is in cache (or fails) **before** anything is presented. A success warms the shared screens cache so the next `show_screen` with the same key can render without the SDK loading view. It is **not** a prerequisite for `show_screen`.
+
+Screens marked **preloadable** in the No-Codes Builder (Settings → General) are fetched automatically at SDK init — that path needs no crate API.
+
+```rust
+use dioxus_qonversion::{load_screen, show_screen, QonversionError};
+
+// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
+match load_screen("your_context_key") {
+    Ok(_screen) => show_screen("your_context_key")?,
+    Err(QonversionError::ScreenNotFound) => { /* app-owned fallback — key has no published screen */ }
+    Err(QonversionError::Timeout { .. }) | Err(QonversionError::Native { .. }) => {
+        /* transient; retry or fallback */
+    }
+    other => other.map(|_| ())?,
+}
+```
+
+Same **serial SDK queue** and **8s** timeout as `identify` / `logout` / Remote Config.
+
 ## Present a No-Codes screen
 
 After init, present any published screen by its **context key** (from the Qonversion dashboard). The key is always an app parameter — this crate never hardcodes screen names.
@@ -96,14 +118,35 @@ This is **fire-and-present**: it returns once the native SDK has been asked to s
 
 On **Android**, `show_screen` may return `QonversionError::StoreUnavailable` **before** present when Play Billing is not connected (unsigned Play account, missing Play Store, `BILLING_UNAVAILABLE` / `SERVICE_DISCONNECTED`). Call it from Dioxus `spawn` / a background thread so that preflight can wait without deadlocking the main looper. UI-thread calls skip the blocking probe (happy path unchanged).
 
-If product fetch still fails **after** present, the process-wide handler from `set_screen_failed_handler` fires with `StoreUnavailable` (Play billing) or `Native` (other load errors). The app owns fallback UI — this crate does not show a dialog or open the Play Store. Finished / purchase / custom-action callbacks remain a later milestone.
+If product fetch still fails **after** present, the process-wide handler from `set_screen_failed_handler` fires with `StoreUnavailable` (Play billing) or `Native` (other load errors). The app owns fallback UI — this crate does not show a dialog or open the Play Store.
+
+Purchases are **not** `Finished`. Register `set_screen_event_handler` and match `ActionFinished { Purchase }` (or `Restore`). `Finished` means the flow closed — dismiss or Close All — and is not a buy.
 
 ```rust
-use dioxus_qonversion::{set_screen_failed_handler, show_screen, QonversionError};
+use dioxus_qonversion::{
+    set_screen_event_handler, set_screen_failed_handler, show_screen, QonversionError,
+    ScreenActionKind, ScreenEvent,
+};
 
 set_screen_failed_handler(|err| match err {
     QonversionError::StoreUnavailable => { /* app-owned fallback UI */ }
     QonversionError::Native { message } => { /* log / other fallback */ }
+});
+
+set_screen_event_handler(|event| match event {
+    ScreenEvent::ActionFinished { kind: ScreenActionKind::Purchase } => {
+        /* buy succeeded — refresh app status */
+    }
+    ScreenEvent::ActionFinished { kind: ScreenActionKind::Restore } => {
+        /* restore-from-paywall succeeded */
+    }
+    ScreenEvent::ActionFailed { kind: ScreenActionKind::Purchase, message } => {
+        /* buy failed; screen may stay open */
+        let _ = message;
+    }
+    ScreenEvent::Finished => { /* flow closed; do not treat as purchased */ }
+    ScreenEvent::CustomAction { value } => { /* builder custom action; screen stays open */ let _ = value; }
+    _ => {}
 });
 
 // Prefer `spawn` on Android so preflight can return StoreUnavailable without flashing UI.

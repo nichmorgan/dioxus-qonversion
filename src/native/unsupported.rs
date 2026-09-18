@@ -11,6 +11,10 @@ pub(crate) fn show_screen(_context_key: &str) -> Result<(), QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }
 
+pub(crate) fn load_screen(_context_key: &str) -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
 pub(crate) fn identify(_user_id: &str) -> Result<(), QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }

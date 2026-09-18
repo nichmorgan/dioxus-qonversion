@@ -22,8 +22,12 @@ import com.qonversion.android.sdk.listeners.QonversionRemoteConfigCallback
 import com.qonversion.android.sdk.listeners.QonversionUserCallback
 import io.qonversion.nocodes.NoCodes
 import io.qonversion.nocodes.NoCodesConfig
+import io.qonversion.nocodes.dto.QAction
+import io.qonversion.nocodes.dto.QNoCodeScreen
+import io.qonversion.nocodes.error.ErrorCode
 import io.qonversion.nocodes.error.NoCodesError
 import io.qonversion.nocodes.interfaces.NoCodesDelegate
+import io.qonversion.nocodes.interfaces.NoCodesScreenLoadCallback
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
@@ -49,6 +53,23 @@ object DioxusQonversionHost {
     private const val STORE_PREFLIGHT_TIMEOUT_MS = 4000L
 
     private val screenFailedDelegate = object : NoCodesDelegate {
+        override fun onActionFinishedExecuting(action: QAction) {
+            notifyScreenEventSafe(encodeActionEvent("action_finished", action, null))
+        }
+
+        override fun onActionFailedToExecute(action: QAction) {
+            val message = action.error?.toString() ?: "No-Codes action failed"
+            notifyScreenEventSafe(encodeActionEvent("action_failed", action, message))
+        }
+
+        override fun onFinished() {
+            notifyScreenEventSafe(encodeFinishedEvent())
+        }
+
+        override fun onCustomAction(value: String) {
+            notifyScreenEventSafe(encodeCustomActionEvent(value))
+        }
+
         override fun onScreenFailedToLoad(error: NoCodesError) {
             val storeUnavailable = isStoreUnavailable(error)
             try {
@@ -190,6 +211,13 @@ object DioxusQonversionHost {
     external fun notifyScreenFailed(storeUnavailable: Boolean, message: String)
 
     /**
+     * JNI target registered from Rust during initialize.
+     * [json] is a screen-event envelope (`kind` + optional `action` / `message` / `value`).
+     */
+    @JvmStatic
+    external fun notifyScreenEvent(json: String)
+
+    /**
      * Present a No-Codes screen by context key (fire-and-present).
      *
      * Queues onto the Activity UI thread and returns immediately.
@@ -215,6 +243,53 @@ object DioxusQonversionHost {
             activity.runOnUiThread(present)
         }
         return null
+    }
+
+    /**
+     * Load a No-Codes screen by context key without presenting it (ask-first).
+     *
+     * Posts to the main looper and **waits** on the calling thread for the SDK
+     * callback. Must not be invoked on the main thread (deadlock).
+     *
+     * @return JSON envelope (`ok:true` + id/context_key, or `ok:false` + error).
+     */
+    @JvmStatic
+    fun loadScreen(contextKey: String): String {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return encodeLoadScreenError("load_screen must not be called on the Android main thread", false)
+        }
+        val trimmed = contextKey.trim()
+        if (trimmed.isEmpty()) {
+            return encodeLoadScreenError("context_key must not be empty", false)
+        }
+
+        val latch = CountDownLatch(1)
+        val envelope = AtomicReference(encodeLoadScreenError("load screen did not complete", false))
+        Handler(Looper.getMainLooper()).post {
+            try {
+                NoCodes.shared.loadScreen(trimmed, object : NoCodesScreenLoadCallback {
+                    override fun onSuccess(screen: QNoCodeScreen) {
+                        envelope.set(encodeLoadScreenSuccess(screen))
+                        latch.countDown()
+                    }
+
+                    override fun onError(error: NoCodesError) {
+                        envelope.set(
+                            encodeLoadScreenError(
+                                error.toString(),
+                                error.code == ErrorCode.ScreenNotFound,
+                            ),
+                        )
+                        latch.countDown()
+                    }
+                })
+            } catch (t: Throwable) {
+                envelope.set(encodeLoadScreenError(t.message ?: t.toString(), false))
+                latch.countDown()
+            }
+        }
+        latch.await()
+        return envelope.get()
     }
 
     /**
@@ -417,6 +492,57 @@ object DioxusQonversionHost {
         } catch (t: Throwable) {
             encodeRemoteConfigError(t.message ?: t.toString())
         }
+    }
+
+    private fun notifyScreenEventSafe(json: String) {
+        try {
+            notifyScreenEvent(json)
+        } catch (t: Throwable) {
+            android.util.Log.e("DioxusQonversion", "notifyScreenEvent failed: ${t.message}", t)
+        }
+    }
+
+    private fun encodeActionEvent(kind: String, action: QAction, message: String?): String {
+        val root = JSONObject()
+        root.put("kind", kind)
+        root.put("action", action.type.type)
+        if (message != null) {
+            root.put("message", message)
+        }
+        return root.toString()
+    }
+
+    private fun encodeFinishedEvent(): String {
+        val root = JSONObject()
+        root.put("kind", "finished")
+        return root.toString()
+    }
+
+    private fun encodeCustomActionEvent(value: String): String {
+        val root = JSONObject()
+        root.put("kind", "custom_action")
+        root.put("value", value)
+        return root.toString()
+    }
+
+    private fun encodeLoadScreenSuccess(screen: QNoCodeScreen): String {
+        return try {
+            val root = JSONObject()
+            root.put("ok", true)
+            root.put("id", screen.id)
+            root.put("context_key", screen.contextKey)
+            root.toString()
+        } catch (t: Throwable) {
+            encodeLoadScreenError(t.message ?: t.toString(), false)
+        }
+    }
+
+    private fun encodeLoadScreenError(message: String, screenNotFound: Boolean): String {
+        val root = JSONObject()
+        root.put("ok", false)
+        root.put("error", message)
+        root.put("screen_not_found", screenNotFound)
+        return root.toString()
     }
 
     private fun encodeRemoteConfigError(message: String): String {

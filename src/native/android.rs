@@ -26,6 +26,11 @@ const NOTIFY_SCREEN_FAILED: NativeMethod = native_method! {
     name = "notifyScreenFailed",
 };
 
+const NOTIFY_SCREEN_EVENT: NativeMethod = native_method! {
+    static fn notify_screen_event(json: JString),
+    name = "notifyScreenEvent",
+};
+
 impl From<jni::errors::Error> for QonversionError {
     fn from(error: jni::errors::Error) -> Self {
         Self::Native {
@@ -105,6 +110,33 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
             .l()?;
 
         map_host_result(env, err)
+    })
+}
+
+pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+    let context_key = context_key.to_string();
+
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+        let key = env
+            .new_string(&context_key)
+            .map_err(|e| QonversionError::Native {
+                message: format!("failed to create context key string: {e}"),
+            })?;
+
+        let envelope = env
+            .call_static_method(
+                &host,
+                jni_str!("loadScreen"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+                &[JValue::Object(&key)],
+            )
+            .map_err(|e| map_exception(env, e, "DioxusQonversionHost.loadScreen"))?
+            .l()?;
+
+        required_jstring(env, envelope, "DioxusQonversionHost.loadScreen")
     })
 }
 
@@ -286,11 +318,10 @@ fn register_screen_failed_native(
     env: &mut Env<'_>,
     host: &JClass<'_>,
 ) -> Result<(), QonversionError> {
-    unsafe { env.register_native_methods(host, &[NOTIFY_SCREEN_FAILED]) }.map_err(|e| {
-        QonversionError::Native {
-            message: format!("failed to register notifyScreenFailed: {e}"),
-        }
-    })
+    unsafe { env.register_native_methods(host, &[NOTIFY_SCREEN_FAILED, NOTIFY_SCREEN_EVENT]) }
+        .map_err(|e| QonversionError::Native {
+            message: format!("failed to register screen native methods: {e}"),
+        })
 }
 
 fn notify_screen_failed<'local>(
@@ -304,6 +335,18 @@ fn notify_screen_failed<'local>(
         store_unavailable,
         message,
     ));
+    Ok(())
+}
+
+fn notify_screen_event<'local>(
+    env: &mut Env<'local>,
+    _class: JClass<'local>,
+    json: JString<'local>,
+) -> Result<(), jni::errors::Error> {
+    let json = json.try_to_string(env).unwrap_or_default();
+    if let Some(event) = crate::screen::parse_event_envelope(&json) {
+        crate::screen::dispatch_screen_event(event);
+    }
     Ok(())
 }
 

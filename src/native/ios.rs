@@ -38,6 +38,16 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
     map_host_result(err)
 }
 
+pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let key = nsstring(context_key)?;
+
+    let envelope: *mut Object = unsafe { msg_send![host, loadScreenWithContextKey: key] };
+    nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
+        message: "DioxusQonversionHost.loadScreenWithContextKey returned nil".into(),
+    })
+}
+
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
     let host = host_class()?;
     let id = nsstring(user_id)?;

@@ -29,6 +29,11 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
     sys::show_screen(context_key)
 }
 
+/// Load a No-Codes screen by context key without presenting it.
+pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
+    sys::load_screen(context_key)
+}
+
 /// Identify the Qonversion user with a stable app user id.
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
     sys::identify(user_id)

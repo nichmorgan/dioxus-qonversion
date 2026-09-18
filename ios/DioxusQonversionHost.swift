@@ -5,6 +5,9 @@ import NoCodes
 @_silgen_name("dioxus_qonversion_notify_screen_failed")
 func dioxus_qonversion_notify_screen_failed(_ storeUnavailable: Int32, _ message: UnsafePointer<CChar>?)
 
+@_silgen_name("dioxus_qonversion_notify_screen_event")
+func dioxus_qonversion_notify_screen_event(_ json: UnsafePointer<CChar>?)
+
 /// Thin ObjC-visible host so Rust can call Qonversion + No-Codes via `objc`.
 ///
 /// Compile this file into your Dioxus iOS target and add the Qonversion iOS SDK
@@ -56,6 +59,36 @@ public class DioxusQonversionHost: NSObject {
             DispatchQueue.main.async(execute: present)
         }
         return nil
+    }
+
+    /// Load a No-Codes screen by context key without presenting it (ask-first).
+    ///
+    /// Posts to the main actor and **waits**. Must not be invoked on the main thread.
+    ///
+    /// - Returns: JSON envelope (`ok:true` + id/context_key, or `ok:false` + error).
+    @objc(loadScreenWithContextKey:)
+    public static func loadScreen(contextKey: String) -> String {
+        if Thread.isMainThread {
+            return encodeLoadScreenError("load_screen must not be called on the main thread", screenNotFound: false)
+        }
+        let trimmed = contextKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return encodeLoadScreenError("context_key must not be empty", screenNotFound: false)
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var envelope = encodeLoadScreenError("load screen did not complete", screenNotFound: false)
+        Task { @MainActor in
+            do {
+                let screen = try await NoCodes.shared.loadScreen(withContextKey: trimmed)
+                envelope = encodeLoadScreenSuccess(screen)
+            } catch {
+                envelope = encodeLoadScreenFailure(error)
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return envelope
     }
 
     /// Identify the Qonversion user with a stable app user id.
@@ -176,6 +209,34 @@ public class DioxusQonversionHost: NSObject {
         stringifyEnvelope(["ok": false, "error": message])
     }
 
+    private static func encodeLoadScreenSuccess(_ screen: NoCodesScreen) -> String {
+        stringifyEnvelope([
+            "ok": true,
+            "id": screen.id,
+            "context_key": screen.contextKey,
+        ])
+    }
+
+    private static func encodeLoadScreenFailure(_ error: Error) -> String {
+        if let noCodesError = error as? NoCodesError {
+            return encodeLoadScreenError(
+                noCodesError.message,
+                screenNotFound: noCodesError.type == .screenNotFound
+            )
+        }
+        let blob = String(describing: error).uppercased()
+        let screenNotFound = blob.contains("SCREENNOTFOUND") || blob.contains("SCREEN_NOT_FOUND")
+        return encodeLoadScreenError(error.localizedDescription, screenNotFound: screenNotFound)
+    }
+
+    private static func encodeLoadScreenError(_ message: String, screenNotFound: Bool) -> String {
+        stringifyEnvelope([
+            "ok": false,
+            "error": message,
+            "screen_not_found": screenNotFound,
+        ])
+    }
+
     private static func encodeSource(_ source: Qonversion.RemoteConfigurationSource) -> [String: Any] {
         let contextKey: Any
         if let key = source.contextKey, !key.isEmpty {
@@ -243,8 +304,25 @@ public class DioxusQonversionHost: NSObject {
     }
 }
 
-/// No-Codes failed-to-load only. Other delegate methods stay default no-ops.
+/// Forwards No-Codes load failures and purchase / restore / finish / custom-action events.
 private final class ScreenFailedDelegate: NoCodesDelegate {
+    func noCodesFinishedExecuting(action: NoCodesAction) {
+        notifyScreenEvent(kind: "action_finished", action: action, message: nil)
+    }
+
+    func noCodesFailedToExecute(action: NoCodesAction, error: Error?) {
+        let message = error.map { String(describing: $0) } ?? "No-Codes action failed"
+        notifyScreenEvent(kind: "action_failed", action: action, message: message)
+    }
+
+    func noCodesFinished() {
+        notifyScreenEventJson(["kind": "finished"])
+    }
+
+    func noCodesReceivedCustomAction(value: String) {
+        notifyScreenEventJson(["kind": "custom_action", "value": value])
+    }
+
     func noCodesFailedToLoadScreen(error: Error?) {
         let storeUnavailable = isStoreUnavailable(error)
         let message = error.map { String(describing: $0) } ?? "No-Codes screen failed to load"
@@ -252,6 +330,42 @@ private final class ScreenFailedDelegate: NoCodesDelegate {
             dioxus_qonversion_notify_screen_failed(storeUnavailable ? 1 : 0, cstr)
         }
         NoCodes.shared.close()
+    }
+
+    private func notifyScreenEvent(kind: String, action: NoCodesAction, message: String?) {
+        var dict: [String: Any] = [
+            "kind": kind,
+            "action": actionTypeString(action.type),
+        ]
+        if let message {
+            dict["message"] = message
+        }
+        notifyScreenEventJson(dict)
+    }
+
+    private func notifyScreenEventJson(_ dict: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(dict),
+              let data = try? JSONSerialization.data(withJSONObject: dict),
+              let string = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        string.withCString { cstr in
+            dioxus_qonversion_notify_screen_event(cstr)
+        }
+    }
+
+    private func actionTypeString(_ type: NoCodesActionType) -> String {
+        switch type {
+        case .purchase: return "purchase"
+        case .restore: return "restore"
+        case .close: return "close"
+        case .closeAll: return "close_all"
+        case .navigation: return "navigation"
+        case .url: return "url"
+        case .deeplink: return "deeplink"
+        default: return "unknown"
+        }
     }
 }
 
