@@ -84,6 +84,24 @@ pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, Qonvers
     })
 }
 
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let timeout_ms = crate::queue::timeout_ms();
+    let envelope: *mut Object =
+        unsafe { msg_send![host, checkEntitlementsWithTimeoutMs: timeout_ms] };
+    require_host_envelope(
+        envelope,
+        "DioxusQonversionHost.checkEntitlementsWithTimeoutMs",
+    )
+}
+
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let timeout_ms = crate::queue::timeout_ms();
+    let envelope: *mut Object = unsafe { msg_send![host, restoreWithTimeoutMs: timeout_ms] };
+    require_host_envelope(envelope, "DioxusQonversionHost.restoreWithTimeoutMs")
+}
+
 pub(crate) fn is_main_thread() -> bool {
     let is_main: bool = unsafe { msg_send![class!(NSThread), isMainThread] };
     is_main
@@ -94,6 +112,12 @@ fn host_class() -> Result<&'static Class, QonversionError> {
         QonversionError::HostMissing(
             "DioxusQonversionHost not found. Compile ios/DioxusQonversionHost.swift into the iOS app and link the Qonversion SDK (≥ 6.13.0).".into(),
         )
+    })
+}
+
+fn require_host_envelope(ptr: *mut Object, what: &str) -> Result<String, QonversionError> {
+    nsstring_to_rust(ptr).ok_or_else(|| QonversionError::Native {
+        message: format!("{what} returned nil"),
     })
 }
 

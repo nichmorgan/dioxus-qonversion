@@ -129,7 +129,7 @@ public class DioxusQonversionHost: NSObject {
     @objc(remoteConfigWithContextKey:timeoutMs:)
     public static func remoteConfig(contextKey: String?, timeoutMs: Int64) -> String {
         if Thread.isMainThread {
-            return encodeRemoteConfigError("remote_config must not be called on the main thread")
+            return encodeEnvelopeError("remote_config must not be called on the main thread")
         }
 
         let trimmed = contextKey?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -137,15 +137,15 @@ public class DioxusQonversionHost: NSObject {
 
         return awaitOnMain(
             timeoutMs: timeoutMs,
-            timeoutValue: encodeRemoteConfigError("remote config timed out", timedOut: true)
+            timeoutValue: encodeEnvelopeError("remote config timed out", timedOut: true)
         ) { complete in
             let handler: (Qonversion.RemoteConfig?, Error?) -> Void = { config, error in
                 if let error {
-                    complete(encodeRemoteConfigError(error.localizedDescription))
+                    complete(encodeEnvelopeError(error.localizedDescription))
                 } else if let config {
                     complete(encodeRemoteConfigSuccess(config))
                 } else {
-                    complete(encodeRemoteConfigError("remote config returned no data"))
+                    complete(encodeEnvelopeError("remote config returned no data"))
                 }
             }
             if let key {
@@ -153,6 +153,38 @@ public class DioxusQonversionHost: NSObject {
             } else {
                 // No NS_SWIFT_NAME on the empty-key overload: first argument is unlabeled.
                 Qonversion.shared().remoteConfig(handler)
+            }
+        }
+    }
+
+    /// Return the current entitlement map as a JSON envelope.
+    ///
+    /// Posts to the main queue and **waits**. Must not be invoked on the main thread.
+    @objc(checkEntitlementsWithTimeoutMs:)
+    public static func checkEntitlements(timeoutMs: Int64) -> String {
+        entitlementsCall(timeoutMs: timeoutMs, label: "check entitlements") { complete in
+            Qonversion.shared().checkEntitlements { entitlements, error in
+                if let error {
+                    complete(encodeEnvelopeError(error.localizedDescription))
+                } else {
+                    complete(encodeEntitlementsSuccess(entitlements))
+                }
+            }
+        }
+    }
+
+    /// Restore Store purchases and return the entitlement map as a JSON envelope.
+    ///
+    /// Posts to the main queue and **waits**. Must not be invoked on the main thread.
+    @objc(restoreWithTimeoutMs:)
+    public static func restore(timeoutMs: Int64) -> String {
+        entitlementsCall(timeoutMs: timeoutMs, label: "restore") { complete in
+            Qonversion.shared().restore { entitlements, error in
+                if let error {
+                    complete(encodeEnvelopeError(error.localizedDescription))
+                } else {
+                    complete(encodeEntitlementsSuccess(entitlements))
+                }
             }
         }
     }
@@ -219,7 +251,7 @@ public class DioxusQonversionHost: NSObject {
         return stringifyEnvelope(dict)
     }
 
-    private static func encodeRemoteConfigError(_ message: String, timedOut: Bool = false) -> String {
+    private static func encodeEnvelopeError(_ message: String, timedOut: Bool = false) -> String {
         var dict: [String: Any] = ["ok": false, "error": message]
         if timedOut {
             dict["timed_out"] = true
@@ -227,12 +259,112 @@ public class DioxusQonversionHost: NSObject {
         return stringifyEnvelope(dict)
     }
 
+    private static func entitlementsCall(
+        timeoutMs: Int64,
+        label: String,
+        work: @escaping (@escaping (String) -> Void) -> Void
+    ) -> String {
+        if Thread.isMainThread {
+            return encodeEnvelopeError("\(label) must not be called on the main thread")
+        }
+        return awaitOnMain(
+            timeoutMs: timeoutMs,
+            timeoutValue: encodeEnvelopeError("\(label) timed out", timedOut: true)
+        ) { complete in
+            work(complete)
+        }
+    }
+
+    private static func encodeEntitlementsSuccess(
+        _ entitlements: [String: Qonversion.Entitlement]
+    ) -> String {
+        var map: [String: Any] = [:]
+        for (id, entitlement) in entitlements {
+            map[id] = encodeEntitlement(entitlement)
+        }
+        return stringifyEnvelope(["ok": true, "entitlements": map])
+    }
+
+    private static func encodeEntitlement(_ entitlement: Qonversion.Entitlement) -> [String: Any] {
+        let productId = entitlement.productID.trimmingCharacters(in: .whitespacesAndNewlines)
+        var obj: [String: Any] = [
+            "id": entitlement.entitlementID,
+            "is_active": entitlement.isActive,
+            "product_id": productId.isEmpty ? NSNull() : productId,
+            "renew_state": renewStateString(entitlement.renewState),
+            "source": entitlementSourceString(entitlement.source),
+        ]
+        if let expiration = entitlement.expirationDate {
+            obj["expiration_date"] = Int64((expiration.timeIntervalSince1970 * 1000.0).rounded())
+        } else {
+            obj["expiration_date"] = NSNull()
+        }
+        return obj
+    }
+
+    private static func renewStateString(_ state: Qonversion.EntitlementRenewState) -> String {
+        switch state {
+        case .nonRenewable: return "non_renewable"
+        case .willRenew: return "will_renew"
+        case .cancelled: return "canceled"
+        case .billingIssue: return "billing_issue"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func entitlementSourceString(_ source: Qonversion.EntitlementSource) -> String {
+        switch source {
+        case .appStore: return "appstore"
+        case .playStore: return "playstore"
+        case .stripe: return "stripe"
+        case .manual: return "manual"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
     private static func encodeLoadScreenSuccess(_ screen: NoCodesScreen) -> String {
-        stringifyEnvelope([
+        var dict: [String: Any] = [
             "ok": true,
             "id": screen.id,
             "context_key": screen.contextKey,
-        ])
+            "default_variables": screen.defaultVariables.map(encodeScreenVariable),
+        ]
+        if let selected = screen.defaultSelectedProductId, !selected.isEmpty {
+            dict["default_selected_product_id"] = selected
+        } else {
+            dict["default_selected_product_id"] = NSNull()
+        }
+        return stringifyEnvelope(dict)
+    }
+
+    private static func encodeScreenVariable(_ variable: NoCodesScreenVariable) -> [String: Any] {
+        [
+            "kind": screenVariableKindString(variable.kind),
+            "key": variable.key,
+            "type": variable.type,
+            "value": encodeScreenVariableValue(variable.value),
+        ]
+    }
+
+    private static func screenVariableKindString(_ kind: NoCodesScreenVariableKind) -> String {
+        switch kind {
+        case .custom: return "custom"
+        case .product: return "product"
+        case .selectedProduct: return "selected_product"
+        case .unknown: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func encodeScreenVariableValue(_ value: NoCodesScreenVariableValue) -> Any {
+        switch value {
+        case .bool(let flag): return flag
+        case .string(let text): return text
+        case .number(let number): return number
+        case .none: return NSNull()
+        }
     }
 
     private static func encodeLoadScreenFailure(_ error: Error) -> String {
@@ -318,7 +450,7 @@ public class DioxusQonversionHost: NSObject {
     }
 
     private static func stringifyEnvelope(_ dict: [String: Any]) -> String {
-        stringifyJson(dict) ?? #"{"ok":false,"error":"failed to serialize remote config"}"#
+        stringifyJson(dict) ?? #"{"ok":false,"error":"failed to serialize envelope"}"#
     }
 }
 

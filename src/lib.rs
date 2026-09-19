@@ -9,6 +9,7 @@
 //! [roadmap](https://github.com/nichmorgan/dioxus-qonversion/issues/1).
 
 mod config;
+mod entitlements;
 mod error;
 mod helpers;
 mod identity;
@@ -20,10 +21,15 @@ mod remote_config;
 mod screen;
 
 pub use config::{Environment, InitConfig, LaunchMode};
+pub use entitlements::{
+    check_entitlements, restore, Entitlement, EntitlementRenewState, EntitlementSource,
+};
 pub use error::QonversionError;
 pub use identity::{identify, logout};
 pub use init::{initialize, is_initialized};
-pub use load_screen::{load_screen, LoadedScreen};
+pub use load_screen::{
+    load_screen, LoadedScreen, ScreenVariable, ScreenVariableKind, ScreenVariableValue,
+};
 pub use queue::{sdk_timeout, set_sdk_timeout, DEFAULT_SDK_TIMEOUT};
 pub use remote_config::{
     remote_config, remote_config_default, Experiment, ExperimentGroup, ExperimentGroupType,
@@ -38,13 +44,14 @@ pub use screen::{
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        clear_screen_event_handler, clear_screen_failed_handler, identify, initialize,
-        is_initialized, load_screen, logout, remote_config, remote_config_default, sdk_timeout,
-        set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout, show_screen,
-        Environment, Experiment, ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode,
-        LoadedScreen, QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
+        check_entitlements, clear_screen_event_handler, clear_screen_failed_handler, identify,
+        initialize, is_initialized, load_screen, logout, remote_config, remote_config_default,
+        restore, sdk_timeout, set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout,
+        show_screen, Entitlement, EntitlementRenewState, EntitlementSource, Environment,
+        Experiment, ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode, LoadedScreen,
+        QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
         RemoteConfigurationSource, RemoteConfigurationSourceType, ScreenActionKind, ScreenEvent,
-        DEFAULT_SDK_TIMEOUT,
+        ScreenVariable, ScreenVariableKind, ScreenVariableValue, DEFAULT_SDK_TIMEOUT,
     };
 }
 
@@ -286,6 +293,46 @@ mod tests {
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = remote_config_default().expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn check_entitlements_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = check_entitlements().expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn check_entitlements_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = check_entitlements().expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn restore_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = restore().expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn restore_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = restore().expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]

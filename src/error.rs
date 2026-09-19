@@ -29,7 +29,8 @@ pub enum QonversionError {
 
     /// A queued SDK call was invoked on the Android / iOS UI thread.
     ///
-    /// Queued APIs (`identify`, `logout`, `remote_config`, `load_screen`) post
+    /// Queued APIs (`identify`, `logout`, `remote_config`, `load_screen`,
+    /// `check_entitlements`, `restore`) post
     /// to the main thread and wait. Calling them from that thread deadlocks.
     /// Use Dioxus `spawn` / a background thread.
     #[error("Qonversion SDK call must not run on the UI thread")]

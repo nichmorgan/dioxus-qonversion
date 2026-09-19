@@ -1,4 +1,4 @@
-//! Serial executor for identify / Remote Config / load_screen.
+//! Serial executor for identify / Remote Config / load_screen / entitlements.
 //!
 //! [`show_screen`](crate::show_screen) is fire-and-present and skips this queue.
 //! Timeout and overlap: [`QonversionError::Timeout`].

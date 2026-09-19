@@ -27,6 +27,14 @@ pub(crate) fn remote_config(_context_key: Option<&str>) -> Result<String, Qonver
     Err(QonversionError::UnsupportedPlatform)
 }
 
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
 pub(crate) fn is_main_thread() -> bool {
     false
 }

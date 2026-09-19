@@ -219,6 +219,17 @@ pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, Qonvers
     })
 }
 
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    host_timeout_envelope(
+        jni_str!("checkEntitlements"),
+        "DioxusQonversionHost.checkEntitlements",
+    )
+}
+
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    host_timeout_envelope(jni_str!("restore"), "DioxusQonversionHost.restore")
+}
+
 pub(crate) fn is_main_thread() -> bool {
     let Ok((vm, _)) = java_vm_and_context() else {
         return false;
@@ -408,6 +419,27 @@ fn map_store_preflight(env: &mut Env<'_>, err: JObject<'_>) -> Result<(), Qonver
         Some(message) if message == SKIP_PREFLIGHT_MAIN_THREAD => Ok(()),
         Some(_) => Err(QonversionError::StoreUnavailable),
     }
+}
+
+fn host_timeout_envelope(method: &JNIStr, what: &str) -> Result<String, QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+    let timeout_ms = crate::queue::timeout_ms();
+
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+        call_host_jstring(
+            env,
+            &host,
+            method,
+            jni_sig!("(J)Ljava/lang/String;"),
+            &[JValue::Long(timeout_ms)],
+            what,
+        )?
+        .ok_or_else(|| QonversionError::Native {
+            message: format!("{what} returned null"),
+        })
+    })
 }
 
 fn map_optional_host_error(err: Option<String>) -> Result<(), QonversionError> {

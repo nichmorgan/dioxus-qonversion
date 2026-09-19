@@ -28,8 +28,8 @@ Native calls go through a thin host — Kotlin on Android (auto-bundled by Dioxu
 
 | Layer | Owns |
 | -- | -- |
-| **Library** | Qonversion primitives (init, identify, logout, paywall, …), serial SDK queue + default timeout |
-| **App** | Project key, stable user id, Remote Config field names, gating UI, fail-open vs fail-closed policy |
+| **Library** | Qonversion primitives (init, identify, logout, paywall, entitlements, restore, …), serial SDK queue + default timeout |
+| **App** | Project key, stable user id, Remote Config field names, which entitlement id is premium, gating UI, fail-open vs fail-closed policy |
 
 ## Initialize
 
@@ -61,9 +61,9 @@ identify(firebase_uid)?;
 logout()?;
 ```
 
-Both `identify` / `logout`, Remote Config, and `load_screen` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker is freed after the wait expires, so a later queued call may overlap still-running SDK work. Calling these from the UI thread returns `QonversionError::MainThread`. `show_screen` stays fire-and-present and is **not** on this queue.
+`identify` / `logout`, Remote Config, `load_screen`, `check_entitlements`, and `restore` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker is freed after the wait expires, so a later queued call may overlap still-running SDK work. Calling these from the UI thread returns `QonversionError::MainThread`. `show_screen` stays fire-and-present and is **not** on this queue.
 
-If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library also does not memoize Remote Config; clear any app-side caches yourself after `logout`.
+If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library does not memoize Remote Config or entitlements; clear any app-side caches yourself after `identify` / `logout`. The native SDK also drops its **in-memory** Remote Config cache on those calls (identify cache-drop even with the same id needs iOS 6.14.0+ / Android 9.7.0+), so refetch `remote_config` afterwards if you still need the payload.
 
 ## Remote Config
 
@@ -81,6 +81,18 @@ let default = remote_config_default()?;
 ```
 
 Same **serial SDK queue** and **8s** timeout as `identify` / `logout`. An empty payload map is success; SDK failures are `QonversionError::Native` or `Timeout`. `source` and `experiment` are present when the SDK assigned this payload from a remote config or A/B experiment.
+
+### Feature flags (app-owned)
+
+Field names stay caller-provided. Treat missing / wrong-type bools as `false` (fail-closed) in the **app**:
+
+```rust
+let enabled = config
+    .payload
+    .get("your_flag_field")
+    .and_then(|value| value.as_bool())
+    .unwrap_or(false);
+```
 
 ## Load a No-Codes screen (optional)
 
@@ -102,7 +114,49 @@ match load_screen("your_context_key") {
 }
 ```
 
-Same **serial SDK queue** and **8s** timeout as `identify` / `logout` / Remote Config.
+A successful load also returns official Builder defaults: `default_selected_product_id` and `default_variables` (custom variables and product slots). Same **serial SDK queue** and **8s** timeout as `identify` / `logout` / Remote Config.
+
+## Check entitlements / restore
+
+After init, read the current entitlement map. An empty map is success — the user has no entitlements. The app owns which dashboard id means “premium”.
+
+```rust
+use dioxus_qonversion::{check_entitlements, restore};
+
+// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
+let entitlements = check_entitlements()?;
+let premium = entitlements
+    .get("your_entitlement_id")
+    .map(|e| e.is_active)
+    .unwrap_or(false);
+
+// After the user taps Restore (or after ActionFinished { Restore } from a No-Codes screen):
+let entitlements = restore()?;
+```
+
+`restore` maps to official `restore()`: it refreshes Store-linked entitlements and returns the same map shape. It does not create a purchase or charge the user. Re-run `check_entitlements` later if you need a fresh snapshot. Same **serial SDK queue** and **8s** timeout as `identify`.
+
+### check_status recipe
+
+Compose Remote Config + entitlements in the **app**. Example field name `entitlement_id` is an example only — never a crate constant:
+
+```rust
+use dioxus_qonversion::{check_entitlements, remote_config};
+
+let config = remote_config("your_context_key")?;
+let entitlement_id = config
+    .payload
+    .get("entitlement_id")
+    .and_then(|value| value.as_str())
+    .unwrap_or("premium");
+let entitlements = check_entitlements()?;
+let active = entitlements
+    .get(entitlement_id)
+    .map(|e| e.is_active)
+    .unwrap_or(false);
+```
+
+Call this after launch, after `identify`, and after `ActionFinished { Purchase }` / `Restore`.
 
 ## Present a No-Codes screen
 
@@ -135,7 +189,7 @@ set_screen_failed_handler(|err| match err {
 
 set_screen_event_handler(|event| match event {
     ScreenEvent::ActionFinished { kind: ScreenActionKind::Purchase } => {
-        /* buy succeeded — refresh app status; queued APIs are safe here */
+        /* buy succeeded — refresh entitlements / status; queued APIs are safe here */
     }
     ScreenEvent::ActionFinished { kind: ScreenActionKind::Restore } => {
         /* restore-from-paywall succeeded */
@@ -170,6 +224,15 @@ Context is taken from `ndk_context` (initialized by Dioxus / wry).
 
 1. Add the [Qonversion iOS SDK](https://github.com/qonversion/qonversion-ios-sdk) via Swift Package Manager (**≥ 6.13.0** for No-Codes).
 2. Compile [`ios/DioxusQonversionHost.swift`](ios/DioxusQonversionHost.swift) from this crate into your Dioxus iOS target (copy or path reference in Xcode / your `dx` mobile project).
+
+## App recipes
+
+These are **not** library features — they show how to compose primitives. Example keys like `"paywall"` are examples only, never crate constants. See [#5](https://github.com/nichmorgan/dioxus-qonversion/issues/5), [#4](https://github.com/nichmorgan/dioxus-qonversion/issues/4), [#6](https://github.com/nichmorgan/dioxus-qonversion/issues/6), [#9](https://github.com/nichmorgan/dioxus-qonversion/issues/9), [#10](https://github.com/nichmorgan/dioxus-qonversion/issues/10).
+
+1. **identify on session** — after sign-in / restore, `identify(stable_user_id)` (best-effort; paywalls still work if it fails). Then refetch `remote_config` if you cached a previous payload.
+2. **present_paywall** — `show_screen(context_key)` with a key from app config or Remote Config. Refresh status on `ActionFinished { Purchase }` (not on `Finished`).
+3. **check_status** — `remote_config(key)` → read the app-defined entitlement id field → `check_entitlements()` → `is_active`.
+4. **feature flags** — `remote_config(key)` → fail-closed bools in the **app** (missing / wrong type → `false`).
 
 ## License
 

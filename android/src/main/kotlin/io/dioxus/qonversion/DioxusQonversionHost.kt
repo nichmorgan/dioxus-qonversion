@@ -17,13 +17,18 @@ import com.qonversion.android.sdk.dto.QRemoteConfig
 import com.qonversion.android.sdk.dto.QRemoteConfigurationSource
 import com.qonversion.android.sdk.dto.QUser
 import com.qonversion.android.sdk.dto.QonversionErrorCode
+import com.qonversion.android.sdk.dto.entitlements.QEntitlement
+import com.qonversion.android.sdk.dto.entitlements.QEntitlementSource
 import com.qonversion.android.sdk.dto.experiments.QExperiment
+import com.qonversion.android.sdk.listeners.QonversionEntitlementsCallback
 import com.qonversion.android.sdk.listeners.QonversionRemoteConfigCallback
 import com.qonversion.android.sdk.listeners.QonversionUserCallback
 import io.qonversion.nocodes.NoCodes
 import io.qonversion.nocodes.NoCodesConfig
 import io.qonversion.nocodes.dto.QAction
 import io.qonversion.nocodes.dto.QNoCodeScreen
+import io.qonversion.nocodes.dto.QScreenVariable
+import io.qonversion.nocodes.dto.QScreenVariableValue
 import io.qonversion.nocodes.error.ErrorCode
 import io.qonversion.nocodes.error.NoCodesError
 import io.qonversion.nocodes.interfaces.NoCodesDelegate
@@ -349,13 +354,13 @@ object DioxusQonversionHost {
     @JvmStatic
     fun remoteConfig(contextKey: String?, timeoutMs: Long): String {
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            return encodeRemoteConfigError("remote_config must not be called on the Android main thread")
+            return encodeEnvelopeError("remote_config must not be called on the Android main thread")
         }
 
         val key = contextKey?.trim()?.takeIf { it.isNotEmpty() }
         return awaitOnMain(
             timeoutMs,
-            encodeRemoteConfigError("remote config timed out", timedOut = true),
+            encodeEnvelopeError("remote config timed out", timedOut = true),
         ) { complete ->
             try {
                 val callback = object : QonversionRemoteConfigCallback {
@@ -364,7 +369,7 @@ object DioxusQonversionHost {
                     }
 
                     override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
-                        complete(encodeRemoteConfigError(qError.description ?: qError.toString()))
+                        complete(encodeEnvelopeError(qError.description ?: qError.toString()))
                     }
                 }
                 if (key == null) {
@@ -373,8 +378,32 @@ object DioxusQonversionHost {
                     Qonversion.shared.remoteConfig(key, callback)
                 }
             } catch (t: Throwable) {
-                complete(encodeRemoteConfigError(t.message ?: t.toString()))
+                complete(encodeEnvelopeError(t.message ?: t.toString()))
             }
+        }
+    }
+
+    /**
+     * Return the current entitlement map as a JSON envelope.
+     *
+     * Posts to the main looper and **waits**. Must not be invoked on the main thread.
+     */
+    @JvmStatic
+    fun checkEntitlements(timeoutMs: Long): String {
+        return entitlementsCall(timeoutMs, "check entitlements") { callback ->
+            Qonversion.shared.checkEntitlements(callback)
+        }
+    }
+
+    /**
+     * Restore Store purchases and return the entitlement map as a JSON envelope.
+     *
+     * Posts to the main looper and **waits**. Must not be invoked on the main thread.
+     */
+    @JvmStatic
+    fun restore(timeoutMs: Long): String {
+        return entitlementsCall(timeoutMs, "restore") { callback ->
+            Qonversion.shared.restore(callback)
         }
     }
 
@@ -509,7 +538,7 @@ object DioxusQonversionHost {
             }
             root.toString()
         } catch (t: Throwable) {
-            encodeRemoteConfigError(t.message ?: t.toString())
+            encodeEnvelopeError(t.message ?: t.toString())
         }
     }
 
@@ -541,15 +570,127 @@ object DioxusQonversionHost {
         return root.toString()
     }
 
+    private fun entitlementsCall(
+        timeoutMs: Long,
+        label: String,
+        start: (QonversionEntitlementsCallback) -> Unit,
+    ): String {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return encodeEnvelopeError("$label must not be called on the Android main thread")
+        }
+        return awaitOnMain(
+            timeoutMs,
+            encodeEnvelopeError("$label timed out", timedOut = true),
+        ) { complete ->
+            try {
+                start(object : QonversionEntitlementsCallback {
+                    override fun onSuccess(entitlements: Map<String, QEntitlement>) {
+                        complete(encodeEntitlementsSuccess(entitlements))
+                    }
+
+                    override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
+                        complete(encodeEnvelopeError(qError.description ?: qError.toString()))
+                    }
+                })
+            } catch (t: Throwable) {
+                complete(encodeEnvelopeError(t.message ?: t.toString()))
+            }
+        }
+    }
+
+    private fun encodeEntitlementsSuccess(entitlements: Map<String, QEntitlement>): String {
+        return try {
+            val root = JSONObject()
+            root.put("ok", true)
+            val map = JSONObject()
+            for ((id, entitlement) in entitlements) {
+                map.put(id, encodeEntitlement(entitlement))
+            }
+            root.put("entitlements", map)
+            root.toString()
+        } catch (t: Throwable) {
+            encodeEnvelopeError(t.message ?: t.toString())
+        }
+    }
+
+    private fun encodeEntitlement(entitlement: QEntitlement): JSONObject {
+        val obj = JSONObject()
+        obj.put("id", entitlement.id)
+        obj.put("is_active", entitlement.isActive)
+        val productId = entitlement.productId
+        if (productId.isEmpty()) {
+            obj.put("product_id", JSONObject.NULL)
+        } else {
+            obj.put("product_id", productId)
+        }
+        val expiration = entitlement.expirationDate
+        if (expiration == null) {
+            obj.put("expiration_date", JSONObject.NULL)
+        } else {
+            obj.put("expiration_date", expiration.time)
+        }
+        obj.put("renew_state", entitlement.renewState.type)
+        obj.put("source", entitlementSourceString(entitlement.source))
+        return obj
+    }
+
+    private fun entitlementSourceString(source: QEntitlementSource): String {
+        return when (source) {
+            QEntitlementSource.AppStore -> "appstore"
+            QEntitlementSource.PlayStore -> "playstore"
+            QEntitlementSource.Stripe -> "stripe"
+            QEntitlementSource.Manual -> "manual"
+            else -> "unknown"
+        }
+    }
+
     private fun encodeLoadScreenSuccess(screen: QNoCodeScreen): String {
         return try {
             val root = JSONObject()
             root.put("ok", true)
             root.put("id", screen.id)
             root.put("context_key", screen.contextKey)
+            val selected = screen.defaultSelectedProductId
+            if (selected.isNullOrEmpty()) {
+                root.put("default_selected_product_id", JSONObject.NULL)
+            } else {
+                root.put("default_selected_product_id", selected)
+            }
+            val variables = JSONArray()
+            for (variable in screen.defaultVariables) {
+                variables.put(encodeScreenVariable(variable))
+            }
+            root.put("default_variables", variables)
             root.toString()
         } catch (t: Throwable) {
             encodeLoadScreenError(t.message ?: t.toString(), false)
+        }
+    }
+
+    private fun encodeScreenVariable(variable: QScreenVariable): JSONObject {
+        val obj = JSONObject()
+        obj.put("kind", screenVariableKindString(variable.kind))
+        obj.put("key", variable.key)
+        obj.put("type", variable.type)
+        obj.put("value", encodeScreenVariableValue(variable.value))
+        return obj
+    }
+
+    private fun screenVariableKindString(kind: QScreenVariable.Kind): String {
+        return when (kind) {
+            QScreenVariable.Kind.Custom -> "custom"
+            QScreenVariable.Kind.Product -> "product"
+            QScreenVariable.Kind.SelectedProduct -> "selected_product"
+            else -> "unknown"
+        }
+    }
+
+    private fun encodeScreenVariableValue(value: QScreenVariableValue): Any {
+        return when (value) {
+            is QScreenVariableValue.Bool -> value.value
+            is QScreenVariableValue.Str -> value.value
+            is QScreenVariableValue.Num -> value.value
+            QScreenVariableValue.None -> JSONObject.NULL
         }
     }
 
@@ -568,7 +709,7 @@ object DioxusQonversionHost {
         return root.toString()
     }
 
-    private fun encodeRemoteConfigError(message: String, timedOut: Boolean = false): String {
+    private fun encodeEnvelopeError(message: String, timedOut: Boolean = false): String {
         val root = JSONObject()
         root.put("ok", false)
         root.put("error", message)

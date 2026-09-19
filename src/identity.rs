@@ -13,6 +13,10 @@ use crate::queue;
 /// Runs on the serial SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`] (see
 /// [`crate::set_sdk_timeout`]). Blocking wait: safe to call from Dioxus `spawn`
 /// / a background thread. The UI thread returns [`QonversionError::MainThread`].
+///
+/// The native SDK drops its in-memory Remote Config cache on identify (iOS
+/// 6.14.0+ / Android 9.7.0+ even when the id is unchanged). Refetch
+/// [`crate::remote_config`] afterwards if you hold a previous payload.
 pub fn identify(user_id: &str) -> Result<(), QonversionError> {
     let user_id = crate::helpers::require_non_empty("user_id", user_id)?;
     init::require_initialized()?;
@@ -26,7 +30,9 @@ pub fn identify(user_id: &str) -> Result<(), QonversionError> {
 /// `spawn` / a background thread.
 ///
 /// This library does not memoize Remote Config or entitlements for the app;
-/// clear any app-side caches yourself after logout.
+/// clear any app-side caches yourself after logout. The native SDK also drops
+/// its in-memory Remote Config cache — refetch [`crate::remote_config`] after
+/// this call.
 pub fn logout() -> Result<(), QonversionError> {
     init::require_initialized()?;
     queue::run_serial(|| native::logout())

@@ -49,6 +49,16 @@ pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, Qonvers
     sys::remote_config(context_key)
 }
 
+/// Return the current entitlement map envelope.
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    sys::check_entitlements()
+}
+
+/// Restore purchases and return the entitlement map envelope.
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    sys::restore()
+}
+
 /// True when the current thread is the Android main looper or iOS main thread.
 pub(crate) fn is_main_thread() -> bool {
     sys::is_main_thread()
