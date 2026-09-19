@@ -325,7 +325,7 @@ object DioxusQonversionHost {
             return "identify must not be called on the Android main thread"
         }
 
-        return awaitOnMain(timeoutMs, HOST_TIMEOUT_SENTINEL) { complete ->
+        return awaitOnMain<String?>(timeoutMs, HOST_TIMEOUT_SENTINEL) { complete ->
             try {
                 Qonversion.shared.identify(trimmed, object : QonversionUserCallback {
                     override fun onSuccess(user: QUser) {
@@ -492,7 +492,7 @@ object DioxusQonversionHost {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return block()
         }
-        return awaitOnMain(timeoutMs, HOST_TIMEOUT_SENTINEL) { complete ->
+        return awaitOnMain<String?>(timeoutMs, HOST_TIMEOUT_SENTINEL) { complete ->
             complete(block())
         }
     }
