@@ -103,8 +103,10 @@ pub(crate) fn restore() -> Result<String, QonversionError> {
 }
 
 pub(crate) fn is_main_thread() -> bool {
-    let is_main: bool = unsafe { msg_send![class!(NSThread), isMainThread] };
-    is_main
+    extern "C" {
+        fn pthread_main_np() -> i32;
+    }
+    unsafe { pthread_main_np() != 0 }
 }
 
 fn host_class() -> Result<&'static Class, QonversionError> {

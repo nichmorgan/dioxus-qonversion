@@ -108,6 +108,22 @@ pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Run `work` off the UI thread when the test harness is on main (iOS `simctl spawn`).
+#[cfg(test)]
+pub(crate) fn off_main<T, F>(work: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    if crate::native::is_main_thread() {
+        thread::spawn(work)
+            .join()
+            .unwrap_or_else(|payload| panic::resume_unwind(payload))
+    } else {
+        work()
+    }
+}
+
 #[cfg(test)]
 struct RestoreSdkTimeout;
 
@@ -127,67 +143,84 @@ mod tests {
     #[test]
     fn timeout_returns_typed_error_and_work_still_finishes() {
         let _guard = test_lock();
-        let _restore = RestoreSdkTimeout;
-        set_sdk_timeout(Duration::from_millis(40));
-        let finished = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&finished);
+        off_main(|| {
+            let _restore = RestoreSdkTimeout;
+            set_sdk_timeout(Duration::from_millis(40));
+            let finished = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&finished);
 
-        let err = run_serial(move || {
-            thread::sleep(Duration::from_millis(150));
-            flag.store(true, Ordering::SeqCst);
-            Ok(())
-        })
-        .expect_err("must time out");
+            let err = run_serial(move || {
+                thread::sleep(Duration::from_millis(150));
+                flag.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect_err("must time out");
 
-        assert!(matches!(err, QonversionError::Timeout { .. }));
+            assert!(matches!(err, QonversionError::Timeout { .. }));
 
-        // Native/work continues after the caller timed out.
-        for _ in 0..50 {
-            if finished.load(Ordering::SeqCst) {
-                break;
+            // Native/work continues after the caller timed out.
+            for _ in 0..50 {
+                if finished.load(Ordering::SeqCst) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
             }
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(
-            finished.load(Ordering::SeqCst),
-            "timed-out work must still complete on the worker"
-        );
+            assert!(
+                finished.load(Ordering::SeqCst),
+                "timed-out work must still complete on the worker"
+            );
+        });
     }
 
     #[test]
     fn jobs_do_not_overlap() {
         let _guard = test_lock();
-        let _restore = RestoreSdkTimeout;
-        set_sdk_timeout(Duration::from_secs(5));
-        let concurrent = Arc::new(AtomicUsize::new(0));
-        let max_seen = Arc::new(AtomicUsize::new(0));
+        off_main(|| {
+            let _restore = RestoreSdkTimeout;
+            set_sdk_timeout(Duration::from_secs(5));
+            let concurrent = Arc::new(AtomicUsize::new(0));
+            let max_seen = Arc::new(AtomicUsize::new(0));
 
-        let spawn_job = |concurrent: Arc<AtomicUsize>, max_seen: Arc<AtomicUsize>| {
-            thread::spawn(move || {
-                run_serial(move || {
-                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                    max_seen.fetch_max(now, Ordering::SeqCst);
-                    thread::sleep(Duration::from_millis(60));
-                    concurrent.fetch_sub(1, Ordering::SeqCst);
-                    Ok(())
+            let spawn_job = |concurrent: Arc<AtomicUsize>, max_seen: Arc<AtomicUsize>| {
+                thread::spawn(move || {
+                    run_serial(move || {
+                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_seen.fetch_max(now, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(60));
+                        concurrent.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    })
                 })
-            })
-        };
+            };
 
-        let a = spawn_job(Arc::clone(&concurrent), Arc::clone(&max_seen));
-        let b = spawn_job(Arc::clone(&concurrent), Arc::clone(&max_seen));
-        a.join().unwrap().expect("job a");
-        b.join().unwrap().expect("job b");
+            let a = spawn_job(Arc::clone(&concurrent), Arc::clone(&max_seen));
+            let b = spawn_job(Arc::clone(&concurrent), Arc::clone(&max_seen));
+            a.join().unwrap().expect("job a");
+            b.join().unwrap().expect("job b");
 
-        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+            assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+        });
     }
 
     #[test]
     fn run_serial_returns_value() {
         let _guard = test_lock();
-        let _restore = RestoreSdkTimeout;
-        set_sdk_timeout(Duration::from_secs(5));
-        let value = run_serial(|| Ok(42)).expect("value");
-        assert_eq!(value, 42);
+        off_main(|| {
+            let _restore = RestoreSdkTimeout;
+            set_sdk_timeout(Duration::from_secs(5));
+            let value = run_serial(|| Ok(42)).expect("value");
+            assert_eq!(value, 42);
+        });
+    }
+
+    #[test]
+    fn spawned_thread_is_not_main() {
+        let is_main = thread::spawn(crate::native::is_main_thread)
+            .join()
+            .unwrap_or_else(|payload| panic::resume_unwind(payload));
+        assert!(
+            !is_main,
+            "a spawned thread must not be reported as the UI thread"
+        );
     }
 }

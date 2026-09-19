@@ -194,7 +194,8 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = load_screen("paywall").expect_err("must fail without a native host");
+        let err = queue::off_main(|| load_screen("paywall"))
+            .expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -223,7 +224,8 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = identify("user-1").expect_err("must fail without a native host");
+        let err =
+            queue::off_main(|| identify("user-1")).expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -243,7 +245,7 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = logout().expect_err("must fail without a native host");
+        let err = queue::off_main(logout).expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -272,7 +274,8 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = remote_config("paywall").expect_err("must fail without a native host");
+        let err = queue::off_main(|| remote_config("paywall"))
+            .expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -292,7 +295,8 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = remote_config_default().expect_err("must fail without a native host");
+        let err =
+            queue::off_main(remote_config_default).expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -312,7 +316,7 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = check_entitlements().expect_err("must fail without a native host");
+        let err = queue::off_main(check_entitlements).expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -332,7 +336,7 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
-        let err = restore().expect_err("must fail without a native host");
+        let err = queue::off_main(restore).expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
