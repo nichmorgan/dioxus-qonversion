@@ -29,6 +29,11 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
     sys::show_screen(context_key)
 }
 
+/// Load a No-Codes screen by context key without presenting it.
+pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
+    sys::load_screen(context_key)
+}
+
 /// Identify the Qonversion user with a stable app user id.
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
     sys::identify(user_id)
@@ -42,4 +47,19 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
 /// Fetch Remote Config. `None` is the dashboard empty context key.
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
     sys::remote_config(context_key)
+}
+
+/// Return the current entitlement map envelope.
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    sys::check_entitlements()
+}
+
+/// Restore purchases and return the entitlement map envelope.
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    sys::restore()
+}
+
+/// True when the current thread is the Android main looper or iOS main thread.
+pub(crate) fn is_main_thread() -> bool {
+    sys::is_main_thread()
 }

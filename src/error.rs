@@ -27,10 +27,20 @@ pub enum QonversionError {
     #[error("native Qonversion host missing: {0}")]
     HostMissing(String),
 
+    /// A queued SDK call was invoked on the Android / iOS UI thread.
+    ///
+    /// Queued APIs (`identify`, `logout`, `remote_config`, `load_screen`,
+    /// `check_entitlements`, `restore`) post
+    /// to the main thread and wait. Calling them from that thread deadlocks.
+    /// Use Dioxus `spawn` / a background thread.
+    #[error("Qonversion SDK call must not run on the UI thread")]
+    MainThread,
+
     /// A queued SDK call exceeded [`crate::sdk_timeout`].
     ///
-    /// Timing out does **not** cancel native work — it only unblocks the Rust
-    /// caller. Fail-open vs fail-closed is app policy.
+    /// Timing out does **not** cancel native work. The serial worker is freed
+    /// after the native wait expires, so a later queued call may overlap
+    /// still-running SDK work. Fail-open vs fail-closed is app policy.
     #[error("Qonversion SDK call timed out after {timeout:?}")]
     Timeout { timeout: Duration },
 
@@ -42,6 +52,14 @@ pub enum QonversionError {
     /// fallback UI (for example opening the store).
     #[error("native store billing is unavailable")]
     StoreUnavailable,
+
+    /// No-Codes has no published screen for the given context key.
+    ///
+    /// Distinct from [`Self::Native`] (transient load failure) and
+    /// [`Self::Timeout`]. Show app-owned fallback UI; retrying the same key
+    /// will not help until the dashboard publishes a screen.
+    #[error("No-Codes screen not found for context key")]
+    ScreenNotFound,
 
     /// Exception / error forwarded from the native SDK.
     #[error("native Qonversion error: {message}")]

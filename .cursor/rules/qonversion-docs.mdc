@@ -1,0 +1,20 @@
+---
+description: Consult official Qonversion docs via the vendored llms.txt index before changing this crate
+alwaysApply: true
+---
+
+# Qonversion docs (source of truth)
+
+Official Qonversion docs define SDK / No-Codes / Remote Config behavior — not training memory. Do not invent host APIs.
+
+1. Start at [`docs/qonversion/llms.txt`](docs/qonversion/llms.txt). If the snapshot looks stale, refetch https://documentation.qonversion.io/llms.txt.
+2. Fetch **only** the matching `.md` pages (index URLs already end in `.md`).
+3. This crate is **mobile-only** (iOS + Android, Subscription Management + No-Codes). Default clusters:
+   - iOS / Android SDK: setup, init, identify, entitlements, purchases, errors
+   - No-Codes: display, preload/`loadScreen`, custom actions, success/failure
+   - Remote Config + targeting
+4. Skip unless the task is explicitly about them: analytics dashboards, web/Stripe/Paddle, Flutter/RN/Unity/Cordova, historical SDK migrations, REST v4/OpenAPI, Apple Ads.
+5. Tool split: **llms.txt = docs/behavior**. **MCP** (`https://mcp.qonversion.io/mcp`, [`.cursor/mcp.json`](.cursor/mcp.json)) = live project data. Do not use MCP as a substitute for SDK docs.
+6. If a fetched page contradicts this crate, follow the official page and flag the mismatch.
+
+Library owns Qonversion primitives (init, identify, logout, paywall, queue). App owns project key, user ids, payload field names, and fail-open vs fail-closed.

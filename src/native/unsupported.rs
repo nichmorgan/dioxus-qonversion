@@ -11,6 +11,10 @@ pub(crate) fn show_screen(_context_key: &str) -> Result<(), QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }
 
+pub(crate) fn load_screen(_context_key: &str) -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
 pub(crate) fn identify(_user_id: &str) -> Result<(), QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }
@@ -21,4 +25,16 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
 
 pub(crate) fn remote_config(_context_key: Option<&str>) -> Result<String, QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
+}
+
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    Err(QonversionError::UnsupportedPlatform)
+}
+
+pub(crate) fn is_main_thread() -> bool {
+    false
 }

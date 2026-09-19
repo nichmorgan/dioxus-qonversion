@@ -38,19 +38,33 @@ pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
     map_host_result(err)
 }
 
+pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let key = nsstring(context_key)?;
+    let timeout_ms = crate::queue::timeout_ms();
+
+    let envelope: *mut Object =
+        unsafe { msg_send![host, loadScreenWithContextKey: key timeoutMs: timeout_ms] };
+    nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
+        message: "DioxusQonversionHost.loadScreenWithContextKey returned nil".into(),
+    })
+}
+
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
     let host = host_class()?;
     let id = nsstring(user_id)?;
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let err: *mut Object = unsafe { msg_send![host, identifyWithUserId: id] };
+    let err: *mut Object = unsafe { msg_send![host, identifyWithUserId: id timeoutMs: timeout_ms] };
 
     map_host_result(err)
 }
 
 pub(crate) fn logout() -> Result<(), QonversionError> {
     let host = host_class()?;
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let err: *mut Object = unsafe { msg_send![host, logout] };
+    let err: *mut Object = unsafe { msg_send![host, logoutWithTimeoutMs: timeout_ms] };
 
     map_host_result(err)
 }
@@ -61,11 +75,38 @@ pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, Qonvers
         Some(key) => nsstring(key)?,
         None => std::ptr::null_mut(),
     };
+    let timeout_ms = crate::queue::timeout_ms();
 
-    let envelope: *mut Object = unsafe { msg_send![host, remoteConfigWithContextKey: key] };
+    let envelope: *mut Object =
+        unsafe { msg_send![host, remoteConfigWithContextKey: key timeoutMs: timeout_ms] };
     nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
         message: "DioxusQonversionHost.remoteConfigWithContextKey returned nil".into(),
     })
+}
+
+pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let timeout_ms = crate::queue::timeout_ms();
+    let envelope: *mut Object =
+        unsafe { msg_send![host, checkEntitlementsWithTimeoutMs: timeout_ms] };
+    require_host_envelope(
+        envelope,
+        "DioxusQonversionHost.checkEntitlementsWithTimeoutMs",
+    )
+}
+
+pub(crate) fn restore() -> Result<String, QonversionError> {
+    let host = host_class()?;
+    let timeout_ms = crate::queue::timeout_ms();
+    let envelope: *mut Object = unsafe { msg_send![host, restoreWithTimeoutMs: timeout_ms] };
+    require_host_envelope(envelope, "DioxusQonversionHost.restoreWithTimeoutMs")
+}
+
+pub(crate) fn is_main_thread() -> bool {
+    extern "C" {
+        fn pthread_main_np() -> i32;
+    }
+    unsafe { pthread_main_np() != 0 }
 }
 
 fn host_class() -> Result<&'static Class, QonversionError> {
@@ -76,12 +117,18 @@ fn host_class() -> Result<&'static Class, QonversionError> {
     })
 }
 
+fn require_host_envelope(ptr: *mut Object, what: &str) -> Result<String, QonversionError> {
+    nsstring_to_rust(ptr).ok_or_else(|| QonversionError::Native {
+        message: format!("{what} returned nil"),
+    })
+}
+
 fn map_host_result(err: *mut Object) -> Result<(), QonversionError> {
     if err.is_null() {
         Ok(())
     } else {
         let message = nsstring_to_rust(err).unwrap_or_else(|| "unknown native error".into());
-        Err(QonversionError::Native { message })
+        Err(crate::helpers::map_host_error_message(message))
     }
 }
 
