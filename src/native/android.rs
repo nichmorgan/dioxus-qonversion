@@ -5,8 +5,11 @@
 //! 2. Compile [`android/DioxusQonversionHost.kt`](../../../android/DioxusQonversionHost.kt)
 //!    into the Dioxus Android target.
 //!
-//! Context comes from `ndk_context` (initialized by Dioxus/wry). Host class loading
-//! uses the Activity [`ClassLoader`] when bare `FindClass` fails off the UI thread.
+//! Context comes from `ndk_context` (initialized by Dioxus/wry). The host class is
+//! loaded only via `Context.getClassLoader()` + `loadClass`. `FindClass` from an
+//! attached thread cannot see the APK class, and jni 0.22 panics on that failure
+//! before any fallback can run. Framework classes (`android.os.Looper`,
+//! `android.app.Activity`) still use `FindClass`.
 
 use jni::objects::{JClass, JClassLoader, JObject, JString, JValue};
 use jni::signature::MethodSignature;
@@ -17,7 +20,7 @@ use jni::{jni_sig, jni_str, native_method, Env, JavaVM, NativeMethod};
 use crate::config::{Environment, InitConfig};
 use crate::error::QonversionError;
 
-const HOST_CLASS: &JNIStr = jni_str!("io/dioxus/qonversion/DioxusQonversionHost");
+const HOST_CLASS_DOT: &str = "io.dioxus.qonversion.DioxusQonversionHost";
 
 /// Must match `DioxusQonversionHost.SKIP_PREFLIGHT_MAIN_THREAD`.
 const SKIP_PREFLIGHT_MAIN_THREAD: &str = "SKIP_PREFLIGHT_MAIN_THREAD";
@@ -299,39 +302,33 @@ fn find_host_class<'a>(
     env: &mut Env<'a>,
     context: &JObject<'_>,
 ) -> Result<JClass<'a>, QonversionError> {
-    match env.find_class(HOST_CLASS) {
-        Ok(class) => Ok(class),
-        Err(_) => {
+    let loader = activity_class_loader(env, context)?;
+    let class_name = env
+        .new_string(HOST_CLASS_DOT)
+        .map_err(|e| QonversionError::Native {
+            message: format!("failed to create class name string: {e}"),
+        })?;
+    let class = env
+        .call_method(
+            &loader,
+            jni_str!("loadClass"),
+            jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
+            &[JValue::Object(&class_name)],
+        )
+        .map_err(|e| {
             env.exception_clear();
-            let loader = activity_class_loader(env, context)?;
-            let class_name = env
-                .new_string("io.dioxus.qonversion.DioxusQonversionHost")
-                .map_err(|e| QonversionError::Native {
-                    message: format!("failed to create class name string: {e}"),
-                })?;
-            let class = env
-                .call_method(
-                    &loader,
-                    jni_str!("loadClass"),
-                    jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
-                    &[JValue::Object(&class_name)],
-                )
-                .map_err(|e| {
-                    env.exception_clear();
-                    QonversionError::HostMissing(format!(
-                        "DioxusQonversionHost not found ({e}). Compile android/DioxusQonversionHost.kt into the Android app and add `implementation 'io.qonversion:no-codes:1.+'`."
-                    ))
-                })?
-                .l()
-                .map_err(|e| QonversionError::Native {
-                    message: format!("loadClass returned unexpected type: {e}"),
-                })?;
-            env.cast_local::<JClass>(class)
-                .map_err(|e| QonversionError::Native {
-                    message: format!("failed to cast loaded host class: {e}"),
-                })
-        }
-    }
+            QonversionError::HostMissing(format!(
+                "DioxusQonversionHost not found ({e}). Compile android/DioxusQonversionHost.kt into the Android app and add `implementation 'io.qonversion:no-codes:1.+'`."
+            ))
+        })?
+        .l()
+        .map_err(|e| QonversionError::Native {
+            message: format!("loadClass returned unexpected type: {e}"),
+        })?;
+    env.cast_local::<JClass>(class)
+        .map_err(|e| QonversionError::Native {
+            message: format!("failed to cast loaded host class: {e}"),
+        })
 }
 
 fn as_activity<'a>(
