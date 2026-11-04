@@ -1,25 +1,19 @@
-# Manual iOS Remote Config diagnostic
+# iOS Remote Config diagnostic
 
 This reuses the Firebase demo's Maestro-on-GitHub-Actions pattern. It does not use Maestro Cloud, REST calls, Firebase emulators, purchases, or production Qonversion settings.
 
 ## Before the first execution
 
-- Authorize the first run separately. No pipeline is started by preparing these files.
-- Store only the **SDK Project Key for Jusfine - Rust Tests** as the Actions secret `QONVERSION_PROJECT_KEY`. Supply it through the team's approved secret-management process. Do not use a Qonversion administrative Secret Key or MCP token.
-- The GitHub default branch must register `workflow_dispatch` in `.github/workflows/test.yml` before GitHub will offer manual dispatch. Adding it only to this feature branch is not sufficient. Arrange that minimal registration with the repository owner; this change does not merge or push anything.
+- Store only the **SDK Project Key for Jusfine - Rust Tests** as the GitHub Environment **test** secret `QONVERSION_PROJECT_KEY`. Supply it through the team's approved secret-management process. Do not use a Qonversion administrative Secret Key or MCP token.
+- Ensure Environment `test` allows deployments from `test/qonversion-remote-config-ios`; any required reviewers must approve the job before it starts.
 - Check that the checkout includes `ios/Package.swift` and `src/native/ios_plugin.rs` from Stage 12.
+- Preparing these files does not push changes or start a pipeline.
 
-## Manual invocation, only after authorization
+## Branch push trigger
 
-Actions -> **Test** -> **Run workflow** -> branch `test/qonversion-remote-config-ios` -> enable **run_ios_remote_config**. Its default is false. The native job only runs for `workflow_dispatch` with this boolean enabled. The existing Android and iOS unit jobs remain PR-only.
+The separate `.github/workflows/ios-remote-config.yml` workflow, named **iOS Remote Config**, runs on pushes exclusively to `test/qonversion-remote-config-ios`. The job uses Environment `test` and reads the key only through `secrets.QONVERSION_PROJECT_KEY`. There is no manual-dispatch or pull-request trigger in this workflow, and no registration on main is required for its push trigger.
 
-Equivalent CLI command, not executed by this setup:
-
-```text
-gh workflow run test.yml --ref test/qonversion-remote-config-ios -f run_ios_remote_config=true
-```
-
-Ordinary pushes to this feature branch do not directly match any existing push trigger. If it already has an open PR, a push can emit `pull_request.synchronize`, running existing unit checks and Release Drafter. It cannot run the manual native job. Release Drafter also runs on pushes to main. The unrelated Cargo Publish workflow runs on release publication or its own manual dispatch; do not select that workflow for this test.
+A future push to that branch will trigger this test, subject to Environment protection rules. The standard `.github/workflows/test.yml` is restored exactly from the local `origin/main` reference and continues to run its original Android and iOS unit tests on pull requests. If the branch has an open PR, a push can also emit `pull_request.synchronize`, running those standard checks and Release Drafter. Release Drafter also runs on pushes to main. The unrelated Cargo Publish workflow runs on release publication or its own manual dispatch.
 
 ## Build and Bundle ID
 

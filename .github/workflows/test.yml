@@ -2,13 +2,6 @@ name: Test
 
 on:
   pull_request:
-  workflow_dispatch:
-    inputs:
-      run_ios_remote_config:
-        description: "Run the real iOS SDK test against Jusfine - Rust Tests"
-        type: boolean
-        required: true
-        default: false
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
@@ -16,7 +9,6 @@ concurrency:
 
 jobs:
   android:
-    if: github.event_name == 'pull_request'
     name: Android (cross)
     runs-on: ubuntu-latest
     steps:
@@ -41,7 +33,6 @@ jobs:
           cross-version: main
 
   ios:
-    if: github.event_name == 'pull_request'
     name: iOS (simulator)
     runs-on: macos-latest
     steps:
@@ -67,99 +58,3 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER: xcrun simctl spawn booted
         run: cargo test --lib --target aarch64-apple-ios-sim
-
-  ios-remote-config:
-    name: iOS Remote Config (manual)
-    if: github.event_name == 'workflow_dispatch' && inputs.run_ios_remote_config
-    runs-on: macos-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    env:
-      CARGO_BUILD_JOBS: "1"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Select simulator architecture
-        id: architecture
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$(uname -m)" in
-            arm64) target=aarch64-apple-ios-sim ;;
-            x86_64) target=x86_64-apple-ios ;;
-            *) echo "Unsupported macOS runner architecture" >&2; exit 1 ;;
-          esac
-          echo "target=$target" >> "$GITHUB_OUTPUT"
-          echo "IOS_TARGET=$target" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Validate test configuration and Xcode
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py preflight
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ steps.architecture.outputs.target }}
-
-      - name: Install Dioxus CLI 0.7.10
-        run: cargo install dioxus-cli --version 0.7.10 --locked
-
-      - name: Install Maestro CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://get.maestro.mobile.dev" | bash
-          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
-
-      # Do not cache target/: it can contain the key and captured compiler env.
-      - name: Build iOS example and Swift host
-        id: build
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py build
-
-      - name: Inspect app, framework and native symbols
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py inspect
-
-      - name: Boot iOS Simulator
-        uses: futureware-tech/simulator-action@v6
-        with:
-          wait_for_boot: true
-
-      - name: Install simulator app
-        run: python3 .github/scripts/ios_remote_config.py install
-
-      - name: Run native SDK test with Maestro
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py test
-
-      - name: Collect sanitized diagnostics and screenshots
-        if: always()
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py collect
-
-      - name: Upload sanitized iOS results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-remote-config-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ios-remote-config-safe/
-          if-no-files-found: warn
-          retention-days: 7
