@@ -41,7 +41,7 @@ public class DioxusQonversionHost: NSObject {
 
     /// Present a No-Codes screen by context key (fire-and-present).
     ///
-    /// Hops to the main thread because `NoCodes.shared.showScreen` is `@MainActor`.
+    /// Schedules presentation on the main actor without blocking the caller.
     ///
     /// - Returns: `nil` on success, or an error description string on failure.
     @objc(showScreenWithContextKey:)
@@ -50,13 +50,8 @@ public class DioxusQonversionHost: NSObject {
         guard !trimmed.isEmpty else {
             return "context_key must not be empty"
         }
-        let present = {
+        Task { @MainActor in
             NoCodes.shared.showScreen(withContextKey: trimmed)
-        }
-        if Thread.isMainThread {
-            present()
-        } else {
-            DispatchQueue.main.async(execute: present)
         }
         return nil
     }
