@@ -44,7 +44,7 @@ The helper sanitizes text before it reaches console or upload files. Only allow-
 
 ## Remaining macOS validation
 
-The first run must establish Swift compilation, SDK resources/dependencies, callback-symbol resolution, framework loading, simulator accessibility and the real SDK response. nm diagnostics do not by themselves prove dynamic symbol visibility. Unresolved @_silgen_name callbacks may prevent Swift linking or dlopen; this setup collects that failure without modifying native callbacks or adding speculative linker flags.
+The next run must establish Swift compilation, SDK resources/dependencies, callback registration, framework loading, simulator accessibility and the real SDK response. Callbacks are registered as C function pointers through Objective-C before SDK initialization; the framework no longer uses @_silgen_name imports of Rust symbols. Existing nm diagnostics are informational: missing dynamic exports or absent callback imports are not errors for this registration strategy. No workflow changes or permissive linker flags are required by this fix.
 
 Local helper tests (stdlib only):
 

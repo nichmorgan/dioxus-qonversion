@@ -478,6 +478,54 @@ mod tests {
     }
 
     #[test]
+    fn registered_c_function_pointers_copy_strings_and_deliver_off_caller_thread() {
+        let _guard = queue::test_lock();
+        let _restore = restore_handler();
+        let caller = thread::current().id();
+        let (failed_tx, failed_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        set_screen_failed_handler(move |error| {
+            let _ = failed_tx.send((error, thread::current().id()));
+        });
+        set_screen_event_handler(move |event| {
+            let _ = event_tx.send((event, thread::current().id()));
+        });
+
+        // These are the exact C ABI pointer types registered with the iOS host.
+        let failed: extern "C" fn(i32, *const c_char) = dioxus_qonversion_notify_screen_failed;
+        let event: extern "C" fn(*const c_char) = dioxus_qonversion_notify_screen_event;
+        {
+            let message = std::ffi::CString::new("native callback failure").unwrap();
+            let json =
+                std::ffi::CString::new(r#"{"kind":"custom_action","value":"ação de teste"}"#)
+                    .unwrap();
+            failed(0, message.as_ptr());
+            event(json.as_ptr());
+        } // Native string storage is gone before the handlers are awaited.
+
+        let (error, failed_thread) = failed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("failure callback");
+        assert_eq!(
+            error,
+            QonversionError::Native {
+                message: "native callback failure".into()
+            }
+        );
+        assert_ne!(failed_thread, caller);
+        let (event, event_thread) = event_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("event callback");
+        assert_eq!(
+            event,
+            ScreenEvent::CustomAction {
+                value: "ação de teste".into()
+            }
+        );
+        assert_ne!(event_thread, caller);
+    }
+
+    #[test]
     fn c_abi_dispatches_screen_event() {
         let _guard = queue::test_lock();
         let _restore = restore_handler();

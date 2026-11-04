@@ -9,7 +9,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::OnceLock;
 
-use objc::runtime::{Class, Object};
+use objc::runtime::{Class, Object, BOOL, NO};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::config::{Environment, InitConfig};
@@ -19,6 +19,7 @@ const HOST_CLASS_NAME: &str = "DioxusQonversionHost";
 
 pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     let host = host_class()?;
+    register_screen_callbacks(host)?;
     let project_key = nsstring(&config.project_key)?;
     let sandbox = matches!(config.environment, Environment::Sandbox);
 
@@ -31,6 +32,34 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     };
 
     map_host_result(err)
+}
+
+/// Pass real C function pointers before SDK initialization can emit events.
+/// Taking these addresses retains the Rust functions without requiring the
+/// separately linked Swift framework to import symbols from the executable.
+fn register_screen_callbacks(host: &Class) -> Result<(), QonversionError> {
+    let supported: BOOL = unsafe {
+        msg_send![host, respondsToSelector: sel!(registerScreenCallbacksWithFailed:event:)]
+    };
+    if supported == NO {
+        return Err(QonversionError::HostMissing(
+            "DioxusQonversionHost does not support callback registration. Rebuild the iOS app with the matching Swift host.".into(),
+        ));
+    }
+
+    // Static functions (not capturing closures) remain valid for the lifetime
+    // of the Rust image. The host framework is also kept loaded by the loader.
+    let failed: extern "C" fn(i32, *const c_char) =
+        crate::screen::dioxus_qonversion_notify_screen_failed;
+    let event: extern "C" fn(*const c_char) = crate::screen::dioxus_qonversion_notify_screen_event;
+    let error: *mut Object = unsafe {
+        msg_send![
+            host,
+            registerScreenCallbacksWithFailed: failed as *const c_void
+            event: event as *const c_void
+        ]
+    };
+    map_host_result(error)
 }
 
 pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
