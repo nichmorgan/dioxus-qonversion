@@ -222,8 +222,53 @@ Context is taken from `ndk_context` (initialized by Dioxus / wry).
 
 ### iOS app deps
 
-1. Add the [Qonversion iOS SDK](https://github.com/qonversion/qonversion-ios-sdk) via Swift Package Manager (**≥ 6.13.0** for No-Codes).
-2. Compile [`ios/DioxusQonversionHost.swift`](ios/DioxusQonversionHost.swift) from this crate into your Dioxus iOS target (copy or path reference in Xcode / your `dx` mobile project).
+1. Build with **Dioxus CLI 0.7+** (`dx`). This crate registers [`ios/Package.swift`](ios/Package.swift) through `src/native/ios_plugin.rs` and manganis so the CLI compiles the existing Swift host and embeds its framework. The package targets iOS 15+ and pins Qonversion iOS SDK **6.13.0**; its `Qonversion` product includes the `Qonversion`, `QonversionSwift`, and `NoCodes` modules.
+2. `host_class()` accepts an already-loaded `DioxusQonversionHost` first. Otherwise, it loads `Frameworks/DioxusSwiftPlugins.framework/DioxusSwiftPlugins` or `Frameworks/DioxusQonversionHost.framework/DioxusQonversionHost` beside the app executable using `dlopen`. Missing files, loader errors, and a loaded image without the expected class are reported as `HostMissing` with details. The framework stays loaded for the process lifetime.
+3. **Non-`dx` integration:** add the local `ios/` Swift package in Xcode (product `DioxusQonversionHost`), or continue compiling the existing host into the app with the matching SDK. Already-loaded hosts are recognized without opening another framework.
+
+**macOS validation still required:** Windows checks do not compile Swift, exercise `dlopen`, or confirm final Mach-O exports. The existing Swift host references `dioxus_qonversion_notify_screen_failed` and `dioxus_qonversion_notify_screen_event` through `@_silgen_name`; Rust defines both with matching C ABI signatures and `#[no_mangle]` in `src/screen.rs`. Building the host as a dynamic framework must also resolve those external symbols and keep them exported by the app. Check the Swift linker output, the app's exported symbols, framework dependencies, and any `dlopen` diagnostic in the first simulator build. No callbacks, JSON serialization, or speculative linker flags are changed by the package registration.
+
+## Remote Config demo
+
+`examples/demo.rs` uses this library's public `initialize` and `remote_config` APIs to read the real SDK configuration for context `dioxus_integration_test`. It targets the **Jusfine - Rust Tests** project, selected by the Project Key supplied at build time (the UI project label does not select or verify the project).
+
+The demo initializes once after the UI runtime starts, in `Environment::Sandbox`. The query button runs the blocking call on a named worker thread, sends its result through a one-shot channel, and applies the result on the Dioxus runtime. It displays elapsed SDK-call time, the returned JSON, source metadata, and explicit initialization, missing-host, timeout, or payload-validation errors. Missing fields, wrong JSON types, or different values fail validation; extra fields are displayed and allowed.
+
+Expected payload:
+
+```json
+{
+  "feature_test_enabled": true,
+  "test_id": "dioxus_ios_remote_config",
+  "message": "Remote Config funcionando"
+}
+```
+
+### Project Key configuration
+
+Set `QONVERSION_PROJECT_KEY` in the shell that starts `dx`, **before compiling**. The example uses `option_env!("QONVERSION_PROJECT_KEY")`, so the key is embedded in the native binary for both Android and iOS. It does not depend on environment variables being available inside the installed app. Dioxus CLI 0.7.10 starts Cargo with the build environment and forwards the captured compiler environment to rustc (`src/build/request.rs` and `src/rustcwrapper.rs` in the CLI).
+
+Supply the **SDK Project Key** from **Jusfine - Rust Tests**, not an API Key, Secret Key, or MCP token. No real key belongs in the source, configuration files, or Git. The app does not display the configured key. If it is missing or blank, the example still compiles but reports an initialization configuration error and disables the query button. A value starting with `sk_` is rejected. Changing the key requires stopping `dx` and rebuilding/restarting the app. This selects another project; `Environment::Sandbox` alone does not.
+
+PowerShell, with an Android emulator or device already running and SDK/JDK/NDK configured:
+
+```powershell
+cd D:\Dev\Projetos\dioxus-qonversion
+$env:QONVERSION_PROJECT_KEY = Read-Host 'Project Key de Jusfine - Rust Tests'
+dx serve --locked --example demo --platform android
+```
+
+Use `--device <device-id>` if needed to select the Android target. No Firebase emulator, REST endpoint, or local Qonversion backend is used. Internet access is required. Repeated queries can use the native SDK cache; a successful query does not prove every click made a network request. The demo does not configure a bundled fallback payload.
+
+### Validation and iOS limitations
+
+```text
+cargo check --locked --example demo
+```
+
+A desktop check validates the Rust example and UI types, not JNI, Swift, or an actual SDK response. Desktop execution reports `UnsupportedPlatform` once a Project Key is supplied. End-to-end validation requires running the app and checking the three expected fields on Android/iOS.
+
+On macOS, the corresponding command is `dx serve --locked --example demo --platform ios`, with `QONVERSION_PROJECT_KEY` in that build's environment. The library now registers the existing Swift host package for automatic CLI compilation and loading as described above. This packaging does not establish that the reported iOS issue is solved: Swift compilation, native callback-symbol resolution, framework loading, and the real SDK response still require an iOS simulator/device build. No iOS execution is implied by a Windows `cargo check`.
 
 ## App recipes
 

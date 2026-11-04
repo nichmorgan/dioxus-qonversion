@@ -9,6 +9,8 @@ mod android;
 mod android_plugin;
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(target_os = "ios")]
+mod ios_plugin;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod unsupported;
 

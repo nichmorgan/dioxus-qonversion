@@ -1,17 +1,21 @@
 //! iOS: call the ObjC-visible Swift host shim.
 //!
-//! The app must:
-//! 1. Add the Qonversion iOS SDK (SPM, ≥ 6.13.0) which includes No-Codes.
-//! 2. Compile [`ios/DioxusQonversionHost.swift`](../../../ios/DioxusQonversionHost.swift)
-//!    into the Dioxus iOS target.
+//! Dioxus CLI 0.7+ compiles and embeds the ios/ Swift package registered by
+//! ios_plugin. Load the resulting framework before looking up its ObjC class.
+//! Apps that already compile/link the host themselves keep working unchanged.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int, c_void};
+use std::os::unix::ffi::OsStrExt;
+use std::sync::OnceLock;
 
 use objc::runtime::{Class, Object};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::config::{Environment, InitConfig};
 use crate::error::QonversionError;
+
+const HOST_CLASS_NAME: &str = "DioxusQonversionHost";
 
 pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
     let host = host_class()?;
@@ -110,11 +114,96 @@ pub(crate) fn is_main_thread() -> bool {
 }
 
 fn host_class() -> Result<&'static Class, QonversionError> {
-    Class::get("DioxusQonversionHost").ok_or_else(|| {
-        QonversionError::HostMissing(
-            "DioxusQonversionHost not found. Compile ios/DioxusQonversionHost.swift into the iOS app and link the Qonversion SDK (≥ 6.13.0).".into(),
-        )
+    // Preserve manual/static integration and hosts loaded by another plugin.
+    if let Some(host) = Class::get(HOST_CLASS_NAME) {
+        return Ok(host);
+    }
+
+    let load_error = load_bundled_swift_host();
+    Class::get(HOST_CLASS_NAME).ok_or_else(|| {
+        let detail = load_error.map(|error| format!(" ({error})")).unwrap_or_default();
+        QonversionError::HostMissing(format!(
+            "{HOST_CLASS_NAME} not found{detail}. Build with Dioxus CLI 0.7+ so ios/ (SwiftPM product {HOST_CLASS_NAME}) is compiled and embedded. Without dx, compile the existing Swift host into the app or link the local ios/ package."
+        ))
     })
+}
+
+/// Load the bundled image once and keep it loaded for the process lifetime.
+/// Like dioxus-firebase, try both dx's umbrella name and the product name.
+/// Cache the diagnostic as well; host_class always checks for an externally
+/// loaded class first, even after a prior loading failure.
+fn load_bundled_swift_host() -> Option<String> {
+    #[link(name = "System")]
+    extern "C" {
+        fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+    }
+
+    const RTLD_NOW: c_int = 0x2;
+    const RTLD_GLOBAL: c_int = 0x8;
+    static LOADED: OnceLock<Option<String>> = OnceLock::new();
+
+    LOADED
+        .get_or_init(|| {
+            let executable = match std::env::current_exe() {
+                Ok(path) => path,
+                Err(error) => return Some(format!("cannot locate app executable: {error}")),
+            };
+            let Some(app_dir) = executable.parent() else {
+                return Some("app executable has no parent directory".into());
+            };
+            let frameworks = app_dir.join("Frameworks");
+            let mut diagnostics = Vec::new();
+
+            for name in ["DioxusSwiftPlugins", HOST_CLASS_NAME] {
+                let path = frameworks.join(format!("{name}.framework/{name}"));
+                if !path.is_file() {
+                    diagnostics.push(format!("framework not found: {}", path.display()));
+                    continue;
+                }
+                let path_cstr = match CString::new(path.as_os_str().as_bytes()) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        diagnostics
+                            .push(format!("framework path contains NUL: {}", path.display()));
+                        continue;
+                    }
+                };
+                let handle = unsafe { dlopen(path_cstr.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+                if handle.is_null() {
+                    diagnostics.push(format!(
+                        "dlopen {} failed: {}",
+                        path.display(),
+                        dlerror_message()
+                    ));
+                    continue;
+                }
+                // Do not dlclose: Objective-C classes and SDK callbacks remain in use.
+                if Class::get(HOST_CLASS_NAME).is_some() {
+                    return None;
+                }
+                diagnostics.push(format!(
+                    "loaded {} but {HOST_CLASS_NAME} was not registered",
+                    path.display()
+                ));
+            }
+            Some(diagnostics.join("; "))
+        })
+        .clone()
+}
+
+fn dlerror_message() -> String {
+    #[link(name = "System")]
+    extern "C" {
+        fn dlerror() -> *const c_char;
+    }
+    let error = unsafe { dlerror() };
+    if error.is_null() {
+        "no dynamic loader diagnostic available".into()
+    } else {
+        unsafe { CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 fn require_host_envelope(ptr: *mut Object, what: &str) -> Result<String, QonversionError> {

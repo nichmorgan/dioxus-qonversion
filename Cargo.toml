@@ -35,8 +35,10 @@ ndk-context = "0.1"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc = "0.2"
+manganis = "0.7.10"
 
 [dev-dependencies]
+futures-channel = "0.3"
 dioxus = { version = "0.7.10", features = ["desktop"] }
 
 [lints.rust]

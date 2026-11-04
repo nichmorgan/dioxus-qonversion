@@ -1,0 +1,32 @@
+appId: com.example.qonversion.remoteconfig
+name: iOS native Remote Config
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: '(?s).*(SDK inicializado|Falha de inicialização|Inicialização:).*'
+    timeout: 60000
+- assertVisible: '.*SDK inicializado\. Pronto para consultar\..*'
+- assertNotVisible: '(?s).*(Host nativo ausente|HostMissing|Falha de inicialização|Inicialização:).*'
+# Match visible text, as in the Firebase iOS flows; do not assume HTML ids
+# become native accessibility identifiers in the iOS WebView.
+- assertVisible: '.*Context Key: dioxus_integration_test.*'
+- tapOn: "Consultar Remote Config"
+- extendedWaitUntil:
+    visible: '.*Tempo de execução:.*'
+    timeout: 30000
+- scrollUntilVisible:
+    element: '(?s).*(Payload válido:|Payload inválido:|Falha na consulta:).*'
+    direction: DOWN
+    timeout: 15000
+- assertVisible: '.*Payload válido: os três campos têm os tipos e valores esperados\..*'
+- assertNotVisible: '(?s).*(Host nativo ausente|HostMissing|Timeout:|Falha na consulta:|Payload inválido:).*'
+- takeScreenshot: payload-validation
+- scrollUntilVisible:
+    element: "JSON recebido"
+    direction: UP
+    timeout: 15000
+- assertVisible: '(?s).*"feature_test_enabled"\s*:\s*true.*'
+- assertVisible: '(?s).*"test_id"\s*:\s*"dioxus_ios_remote_config".*'
+- assertVisible: '(?s).*"message"\s*:\s*"Remote Config funcionando".*'
+- takeScreenshot: received-json

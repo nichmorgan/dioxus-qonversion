@@ -1,0 +1,7 @@
+# Copied temporarily to the workspace only by the manual iOS CI job.
+# Android and local dx serve keep their existing configuration.
+[bundle]
+identifier = "com.example.qonversion.remoteconfig"
+
+[ios]
+deployment_target = "15.0"
