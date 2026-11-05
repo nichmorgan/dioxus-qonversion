@@ -1,0 +1,10 @@
+/target/
+/ios/NativeRemoteConfig.xcodeproj/
+/ios/DerivedData/
+/android/.gradle/
+/android/build/
+/android/local.properties
+/android/app/build/
+/android/app/src/main/jniLibs/
+/__pycache__/
+/artifacts/
