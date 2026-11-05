@@ -30,11 +30,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.dioxus.qonversion.nativetest.tests
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/TestBridge.h
-        OTHER_LDFLAGS: $(inherited) $(RUST_NATIVE_LIBS)
+        # A Rust .a is a linker input, not a framework searched with -F.
+        # Absolute quoted path also handles spaces and avoids choosing a dylib.
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - '"${RUST_LIBRARY}"'
+          - $(RUST_NATIVE_LIBS)
     dependencies:
       - target: NativeRemoteConfig
-      - framework: ${RUST_LIBRARY}
-        embed: false
 schemes:
   NativeRemoteConfig:
     build:

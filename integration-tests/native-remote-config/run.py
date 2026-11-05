@@ -197,6 +197,20 @@ def require_junit_success(reports, started):
         raise RuntimeError("Android JUnit must report exactly one passed contract test, zero failures and zero skips")
 
 
+def ios_link_inputs(target, output):
+    library = (ACTIVE.raw / "target" / target / "debug" / "libnative_remote_config_test.a").resolve()
+    if not library.is_file():
+        raise RuntimeError("Cargo did not produce the required Rust static library: " + str(library))
+    with library.open("rb") as stream:
+        header = stream.read(8)
+    if header != b"!<arch>\n" or library.stat().st_size <= 8:
+        raise RuntimeError("Rust linker input is not a nonempty static archive: " + str(library))
+    libraries = re.findall(r"native-static-libs:\s*(.+)", output)
+    if not libraries:
+        raise RuntimeError("cargo did not report native-static-libs; refusing to guess linker flags")
+    return library, libraries[-1].strip()
+
+
 def ios(args):
     if platform.system() != "Darwin":
         raise RuntimeError("iOS runner requires macOS, Xcode, XcodeGen and a booted Simulator")
@@ -204,16 +218,18 @@ def ios(args):
         raise RuntimeError("--device must be the booted iOS Simulator UDID")
     target = "aarch64-apple-ios-sim" if platform.machine() == "arm64" else "x86_64-apple-ios"
     output = build(target)
-    libraries = re.findall(r"native-static-libs:\s*(.+)", output)
-    if not libraries:
-        raise RuntimeError("cargo did not report native-static-libs; refusing to guess linker flags")
-    library = ACTIVE.raw / "target" / target / "debug" / "libnative_remote_config_test.a"
+    library, native_libraries = ios_link_inputs(target, output)
+    architecture = "arm64" if target == "aarch64-apple-ios-sim" else "x86_64"
+    command(["xcrun", "lipo", "-verify_arch", architecture, str(library)])
+    diagnostic = sanitize(f"Rust static archive verified: {library} ({library.stat().st_size} bytes)\n", ACTIVE.key)
+    ACTIVE.capture(diagnostic)
+    print(diagnostic, end="", flush=True)
     command(["xcodegen", "generate"], cwd=ROOT / "ios",
             env=dict(os.environ, RUST_LIBRARY=str(library)))
     derived = ACTIVE.raw / "ios" / "DerivedData"
     common = ["xcodebuild", "-project", "NativeRemoteConfig.xcodeproj", "-scheme", "NativeRemoteConfig",
               "-destination", f"platform=iOS Simulator,id={args.device}", "-derivedDataPath", str(derived)]
-    command(common + ["build-for-testing", "RUST_NATIVE_LIBS=" + libraries[-1]], cwd=ROOT / "ios")
+    command(common + ["build-for-testing", "RUST_NATIVE_LIBS=" + native_libraries], cwd=ROOT / "ios")
     plans = list((derived / "Build" / "Products").glob("*.xctestrun"))
     if len(plans) != 1:
         raise RuntimeError("expected exactly one generated xctestrun file")

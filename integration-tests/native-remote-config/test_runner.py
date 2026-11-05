@@ -235,5 +235,37 @@ class AdditionalResultRegressionTests(unittest.TestCase):
                                                   skippedTests=0, testResult=status))
 
 
+class IosLinkRegressionTests(unittest.TestCase):
+    # Archive-format fixtures validate build inputs, never simulate an SDK reply.
+    def inputs(self, folder, data=None, output="note: native-static-libs: -lSystem -lobjc -framework Foundation"):
+        previous = runner.ACTIVE
+        runner.ACTIVE = type("Build", (), {"raw": Path(folder)})()
+        library = Path(folder) / "target" / "aarch64-apple-ios-sim" / "debug" / "libnative_remote_config_test.a"
+        if data is not None:
+            library.parent.mkdir(parents=True)
+            library.write_bytes(data)
+        try:
+            return runner.ios_link_inputs("aarch64-apple-ios-sim", output)
+        finally:
+            runner.ACTIVE = previous
+
+    def test_missing_or_wrong_rust_archive_is_rejected_before_xcode(self):
+        for data in (None, b"not a static archive", b"!<arch>\n"):
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as folder:
+                with self.assertRaises(RuntimeError):
+                    self.inputs(folder, data)
+
+    def test_existing_archive_uses_the_same_absolute_path_as_cargo_target_dir(self):
+        with tempfile.TemporaryDirectory(prefix="qonversion path with spaces ") as folder:
+            library, libraries = self.inputs(folder, b"!<arch>\narchive-format-fixture")
+            self.assertEqual(library, (Path(folder) / "target/aarch64-apple-ios-sim/debug/libnative_remote_config_test.a").resolve())
+            self.assertEqual(libraries, "-lSystem -lobjc -framework Foundation")
+
+    def test_missing_native_dependencies_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(RuntimeError):
+                self.inputs(folder, b"!<arch>\narchive-format-fixture", output="Finished dev profile")
+
+
 if __name__ == "__main__":
     unittest.main()

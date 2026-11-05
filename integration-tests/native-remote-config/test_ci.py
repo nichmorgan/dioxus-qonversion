@@ -1,5 +1,12 @@
 """CI protocol/path fixtures only; no native SDK mock or simulated payload."""
 import json
+import ast
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
 import tempfile
 import unittest
@@ -60,3 +67,44 @@ class PublicationTests(unittest.TestCase):
             root, artifacts, record, destination = self.fixture(folder, "FAILED")
             with self.assertRaises(RuntimeError):
                 ci.stage_result(dict(record, status="PASSED", exit_code=0), 0, root, self.KEY, destination)
+
+
+class WorkflowBuildRegressionTests(unittest.TestCase):
+    def workflow(self):
+        return (runner.ROOT.parents[1] / ".github/workflows/native-remote-config.yml").read_text(encoding="utf-8")
+
+    def test_android_setup_overrides_removed_legacy_tools(self):
+        configuration = self.workflow().split("uses: android-actions/setup-android@v3", 1)[1].split("      - ", 1)[0]
+        match = re.search(r"packages:\s*([^\n]+)", configuration)
+        self.assertIsNotNone(match, "action default includes removed tools")
+        self.assertEqual(match[1].split(), ["platform-tools"])
+
+    def test_cleanup_is_gated_on_emulator_start_and_safe_without_adb(self):
+        cleanup = self.workflow().split("- name: Stop Emulator", 1)[1]
+        self.assertIn("if: always() && steps.emulator.outputs.started == 'true'", cleanup)
+        script = textwrap.dedent(cleanup.split("run: |", 1)[1])
+        bash = shutil.which("bash")
+        if not bash:
+            candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/bin/bash.exe"
+            bash = str(candidate) if candidate.is_file() else None
+        self.assertIsNotNone(bash, "bash is required to verify cleanup")
+        env = dict(os.environ, PATH="/no-native-tools")
+        env.pop("BASH_ENV", None)
+        result = subprocess.run([bash, "--noprofile", "--norc", "-c", script], env=env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_xcode_links_the_exact_archive_path_including_spaces(self):
+        project = (runner.ROOT / "ios/project.yml").read_text(encoding="utf-8")
+        self.assertNotIn("framework: ${RUST_LIBRARY}", project)
+        block = re.search(r"OTHER_LDFLAGS:\n((?:[ ]+-[^\n]+\n)+)", project)
+        self.assertIsNotNone(block, "Rust archive must be an explicit linker input")
+        values = []
+        for line in block[1].splitlines():
+            value = line.strip()[2:]
+            values.append(ast.literal_eval(value) if value.startswith(("'", '\"')) else value)
+        library = "/tmp/path with spaces/libnative_remote_config_test.a"
+        flags = " ".join(values).replace("$(inherited)", "").replace("${RUST_LIBRARY}", library)
+        flags = flags.replace("$(RUST_NATIVE_LIBS)", "-lSystem -framework Foundation")
+        self.assertEqual(shlex.split(flags), [library, "-lSystem", "-framework", "Foundation"])
