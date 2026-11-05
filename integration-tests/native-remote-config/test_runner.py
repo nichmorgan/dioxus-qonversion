@@ -1,9 +1,12 @@
-"""Runner opt-in guards only; these tests never load or simulate either SDK."""
+"""Runner and workflow checks that never load or simulate either SDK."""
+import ast
 import os
 import base64
 import contextlib
 import io
 import json
+import re
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -275,6 +278,41 @@ class IosLinkRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(RuntimeError):
                 self.inputs(folder, b"!<arch>\narchive-format-fixture", output="Finished dev profile")
+
+
+class WorkflowBuildRegressionTests(unittest.TestCase):
+    def workflow(self):
+        return (runner.ROOT.parents[1] / ".github/workflows/native-remote-config.yml").read_text(encoding="utf-8")
+
+    def test_android_setup_overrides_removed_legacy_tools(self):
+        configuration = self.workflow().split("uses: android-actions/setup-android@v3", 1)[1].split("      - ", 1)[0]
+        match = re.search(r"packages:\s*([^\n]+)", configuration)
+        self.assertIsNotNone(match, "action default includes removed tools")
+        self.assertEqual(match[1].split(), ["platform-tools"])
+
+    def test_emulator_owns_boot_and_runs_the_native_test_without_a_secret(self):
+        workflow = self.workflow()
+        step = workflow.split("uses: reactivecircus/android-emulator-runner@v2", 1)[1].split("      - name:", 1)[0]
+        self.assertNotIn("QONVERSION_PROJECT_KEY", step)
+        self.assertIn("-no-window", step)
+        self.assertIn("get-state", step)
+        self.assertIn(":app:connectedDebugAndroidTest -PrunNativeRemoteConfig=true", step)
+        self.assertIn("&&", step.split("connectedDebugAndroidTest", 1)[1].split("verify-android", 1)[0])
+        self.assertNotIn("- name: Stop Emulator", workflow)
+
+    def test_xcode_links_the_exact_archive_path_including_spaces(self):
+        project = (runner.ROOT / "ios/project.yml").read_text(encoding="utf-8")
+        self.assertNotIn("framework: ${RUST_LIBRARY}", project)
+        block = re.search(r"OTHER_LDFLAGS:\n((?:[ ]+-[^\n]+\n)+)", project)
+        self.assertIsNotNone(block, "Rust archive must be an explicit linker input")
+        values = []
+        for line in block[1].splitlines():
+            value = line.strip()[2:]
+            values.append(ast.literal_eval(value) if value.startswith(("'", '\"')) else value)
+        library = "/tmp/path with spaces/libnative_remote_config_test.a"
+        flags = " ".join(values).replace("$(inherited)", "").replace("${RUST_LIBRARY}", library)
+        flags = flags.replace("$(RUST_NATIVE_LIBS)", "-lSystem -framework Foundation")
+        self.assertEqual(shlex.split(flags), [library, "-lSystem", "-framework", "Foundation"])
 
 
 if __name__ == "__main__":

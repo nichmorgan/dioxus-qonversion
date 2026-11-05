@@ -1,8 +1,9 @@
 # Teste nativo de Remote Config
 
-O workflow **Native Remote Config** executa um único contrato Rust pelo XCTest no
-iOS e pelo JUnit/JNI no Android. Cada teste inicializa a Qonversion com o SDK real,
-consulta `remote_config("dioxus_integration_test")` e verifica estes valores e tipos:
+O teste verifica se a API pública Rust consegue consultar o Remote Config real
+da Qonversion em iOS e Android sem interface gráfica. O contrato compartilhado
+inicializa o SDK em Sandbox, consulta `remote_config("dioxus_integration_test")`
+e valida os tipos e valores retornados.
 
 | Campo | Tipo | Valor |
 | --- | --- | --- |
@@ -10,49 +11,47 @@ consulta `remote_config("dioxus_integration_test")` e verifica estes valores e t
 | `test_id` | string | `dioxus_ios_remote_config` |
 | `message` | string | `Remote Config funcionando` |
 
-Erros do SDK, timeout, payload vazio e campos ausentes, de tipo incorreto ou com
-valor diferente falham no Rust. Cada job também exige o relatório de exatamente
-um teste executado e aprovado. Relatórios ausentes, testes ignorados e falhas
-impedem a aprovação.
+Erro do SDK, timeout, payload vazio ou qualquer campo ausente ou incorreto
+fazem o contrato falhar.
 
 ## Execução no GitHub Actions
 
-Um push na branch `test/qonversion-remote-config-ios` aciona os jobs independentes.
-O Cargo compila com a feature explícita `native-sdk-test`. No iOS, o plano XCTest
-recebe `QONVERSION_RUN_NATIVE_REMOTE_CONFIG=1`. No Android, o Gradle recebe
-`-PrunNativeRemoteConfig=true`. Essas flags habilitam o teste no respectivo host.
+O workflow **Native Remote Config** roda em pushes na branch
+`test/qonversion-remote-config-ios`. O Cargo inclui as pontes nativas com a
+feature `native-sdk-test`. Cada job também habilita a execução no seu host.
 
-- **iOS** usa Xcode 16.4 e o Simulator iOS 18.5. O job verifica o arquivo Rust
-  estático com `ar` e `lipo`, liga seu caminho absoluto ao projeto XCTest e
-  executa a classe de teste selecionada com `xcodebuild`.
-- **Android** usa API 34 x86_64 com KVM e renderização SwiftShader. A action
-  `android-emulator-runner@v2` gerencia o boot e o encerramento. Após o ADB
-  confirmar o dispositivo, o Gradle instala e executa o teste de instrumentação.
+- **iOS** liga a biblioteca Rust estática ao XCTest e executa o teste no
+  Simulator com `QONVERSION_RUN_NATIVE_REMOTE_CONFIG=1` no plano de teste.
+- **Android** carrega a biblioteca Rust via JNI e roda o JUnit de instrumentação
+  em um emulador API 34 com `-PrunNativeRemoteConfig=true`. O JUnit mantém uma
+  Activity transparente e sem conteúdo durante o teste. Ela coloca o processo
+  em primeiro plano, evento que o SDK exige para concluir a inicialização
+  interna e liberar a consulta.
 
-O workflow usa Python para preparar a flag no plano XCTest, interpretar os
-relatórios nativos e sanitizar as últimas linhas dos logs em caso de falha.
-A execução fica a cargo de Cargo, Xcode e Gradle.
+O workflow usa `run.py` para validar os relatórios nativos. Cada job exige
+exatamente um teste aprovado, sem falhas nem testes ignorados. Um relatório
+ausente também falha. Em caso de falha, o workflow exibe diagnósticos
+sanitizados e mantém os arquivos brutos no diretório temporário do job.
 
-## Chave e diagnósticos
+### Configurar a chave
 
-Configure a SDK Project Key de teste em `secrets.QONVERSION_PROJECT_KEY`, no
-Environment `test`. O workflow a fornece na compilação Rust e na sanitização
-dos logs de falha. Os builds, relatórios e logs brutos ficam em um diretório
-temporário privado por job. O workflow dispensa upload de artefatos e cache de
-builds com a chave incorporada.
+No repositório, abra **Settings → Environments**, selecione ou crie o
+Environment `test` e adicione a SDK Project Key como secret
+`QONVERSION_PROJECT_KEY`. O workflow lê o secret na compilação Rust e na
+sanitização de logs. Mantenha o valor fora do código e dos relatórios.
 
-## Verificação local e transição
+No commit `0936a96`, o iOS aprovou um XCTest e o Android aprovou um JUnit.
+Os dois validaram os três campos com o SDK real.
+[Execução aprovada](https://github.com/nichmorgan/dioxus-qonversion/actions/runs/42111727584)
+
+## Verificação local
 
 ```sh
 cargo test --locked --offline --lib -j 1
 python -B -m unittest discover -s integration-tests/native-remote-config -p 'test_*.py' -v
 ```
 
-Esses comandos verificam a biblioteca e os auxiliares. A consulta real precisa
-passar nos dois jobs do GitHub Actions.
-
-Durante a transição, o modo anterior `run.py ios --run` ou
-`run.py android --run` ainda aceita `--device` para recuperação com um dispositivo
-já iniciado e a chave fornecida externamente. Os arquivos `ci.py` e `test_ci.py`
-ficam disponíveis para comparação até os dois jobs aprovarem a nova execução
-nativa. A retirada deles ocorre após essa validação.
+Esses comandos verificam a biblioteca e os auxiliares. Para rodar a integração
+real localmente, forneça `QONVERSION_PROJECT_KEY` no ambiente e execute
+`run.py ios --run` ou `run.py android --run`, com `--device` para selecionar
+um simulador ou emulador já iniciado.
