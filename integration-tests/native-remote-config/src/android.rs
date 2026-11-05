@@ -1,5 +1,5 @@
-//! Test-only JNI bootstrap. No Activity is created; the application context is
-//! retained until process exit because the SDK queue/callbacks can outlive a call.
+//! Test-only JNI bootstrap. Retain the application context until process exit
+//! because the SDK queue and callbacks can outlive a call.
 use jni::sys::{jint, jobject, jstring, JNIEnv, JavaVM, JNI_OK};
 use std::sync::OnceLock;
 

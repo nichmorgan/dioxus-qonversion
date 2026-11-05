@@ -1,5 +1,6 @@
 package io.dioxus.qonversion.nativetest
 
+import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertNull
@@ -15,7 +16,16 @@ class RemoteConfigTest {
             InstrumentationRegistry.getArguments().getString("runNativeRemoteConfig") == "true")
         // Instrumentation/JUnit worker is not the main looper. The production
         // Kotlin host posts SDK initialization and requests to the main looper.
-        val context = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
-        assertNull(RustBridge.runNative(context))
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext.applicationContext
+        // Qonversion defers its initial launch until the app enters the foreground.
+        val activity = instrumentation.startActivitySync(
+            Intent(context, ForegroundActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        try {
+            assertNull(RustBridge.runNative(context))
+        } finally {
+            instrumentation.runOnMainSync { activity.finish() }
+        }
     }
 }
