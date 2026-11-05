@@ -197,6 +197,15 @@ def require_junit_success(reports, started):
         raise RuntimeError("Android JUnit must report exactly one passed contract test, zero failures and zero skips")
 
 
+def rust_native_libraries(output):
+    # Cargo diagnostics may have indentation, ANSI escapes or CI log prefixes.
+    for line in reversed(sanitize(output, "").splitlines()):
+        _, marker, flags = line.partition("native-static-libs:")
+        if marker and flags.strip():
+            return flags.strip()
+    raise RuntimeError("cargo did not report native-static-libs; refusing to guess linker flags")
+
+
 def ios_link_inputs(target, output):
     library = (ACTIVE.raw / "target" / target / "debug" / "libnative_remote_config_test.a").resolve()
     if not library.is_file():
@@ -205,10 +214,7 @@ def ios_link_inputs(target, output):
         header = stream.read(8)
     if header != b"!<arch>\n" or library.stat().st_size <= 8:
         raise RuntimeError("Rust linker input is not a nonempty static archive: " + str(library))
-    libraries = re.findall(r"native-static-libs:\s*(.+)", output)
-    if not libraries:
-        raise RuntimeError("cargo did not report native-static-libs; refusing to guess linker flags")
-    return library, libraries[-1].strip()
+    return library, rust_native_libraries(output)
 
 
 def ios(args):
@@ -338,7 +344,7 @@ def main(argv=None):
     return emit_result("PASSED", artifacts=artifacts, elapsed=time.monotonic() - started)
 
 
-REPORT_COMMANDS = ("prepare-ios", "verify-ios", "verify-android", "logs")
+REPORT_COMMANDS = ("rust-native-libs", "prepare-ios", "verify-ios", "verify-android", "logs")
 
 
 def workflow_report(argv):
@@ -350,6 +356,8 @@ def workflow_report(argv):
         if args.command == "prepare-ios":
             plan = enable_xctest(plistlib.loads(args.path.read_bytes()))
             args.path.write_bytes(plistlib.dumps(plan))
+        elif args.command == "rust-native-libs":
+            print(rust_native_libraries(args.path.read_text(encoding="utf-8")))
         elif args.command == "verify-ios":
             require_xctest_success(json.loads(args.path.read_text(encoding="utf-8")))
             print("PASSED: one native XCTest validated Remote Config")

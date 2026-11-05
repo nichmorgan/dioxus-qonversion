@@ -62,8 +62,7 @@ jobs:
           test -s "$library" || { echo "Missing Rust static archive" >&2; exit 1; }
           xcrun ar -t "$library" >/dev/null
           xcrun lipo "$library" -verify_arch "$(uname -m)"
-          native_libs=$(sed -n 's/^note: native-static-libs: //p' "$NATIVE_ROOT/cargo.log" | tail -n 1)
-          test -n "$native_libs" || { echo "Missing rustc native-static-libs" >&2; exit 1; }
+          native_libs=$(python3 -B "$TEST_ROOT/run.py" rust-native-libs "$NATIVE_ROOT/cargo.log")
           (cd "$TEST_ROOT/ios" && RUST_LIBRARY="$library" xcodegen generate) > "$NATIVE_ROOT/xcodegen.log" 2>&1
           device=$(xcrun simctl create NativeRemoteConfig com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-18-5)
           trap 'xcrun simctl delete "$device" >/dev/null 2>&1 || true' EXIT
@@ -136,6 +135,14 @@ jobs:
             --lib --features native-sdk-test --target x86_64-linux-android > "$NATIVE_ROOT/cargo.log" 2>&1
           install -D -m 600 "$NATIVE_ROOT/target/x86_64-linux-android/debug/libnative_remote_config_test.so" \
             "$NATIVE_ROOT/jniLibs/x86_64/libnative_remote_config_test.so"
+      - name: Validate Gradle configuration and assemble instrumentation
+        run: |
+          set -euo pipefail
+          export QONVERSION_TEST_RAW_DIR="$NATIVE_ROOT" GRADLE_USER_HOME="$NATIVE_ROOT/gradle-home"
+          options=(-p "$TEST_ROOT/android" --no-daemon --console=plain --max-workers=1
+                   --project-cache-dir "$NATIVE_ROOT/gradle-cache" -PrunNativeRemoteConfig=true)
+          gradle "${options[@]}" help > "$NATIVE_ROOT/gradle-config.log" 2>&1
+          gradle "${options[@]}" :app:assembleDebug :app:assembleDebugAndroidTest > "$NATIVE_ROOT/gradle-build.log" 2>&1
       - name: Boot emulator and run JUnit
         uses: reactivecircus/android-emulator-runner@v2
         with:

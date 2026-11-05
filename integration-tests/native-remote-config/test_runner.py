@@ -236,6 +236,16 @@ class AdditionalResultRegressionTests(unittest.TestCase):
 
 
 class IosLinkRegressionTests(unittest.TestCase):
+    def test_native_static_libraries_from_remote_diagnostic(self):
+        flags = "-lSystem -lobjc -framework Foundation -lobjc -liconv -lSystem -lc -lm"
+        for prefix in ("note: ", "    note: ", "2026-11-05T19:15:08.8755070Z   | note: ",
+                       "\x1b[1m\x1b[92mnote\x1b[0m: "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(runner.rust_native_libraries(
+                    f"Compiling test\n{prefix}native-static-libs: {flags}\r\nFinished\n"
+                ), flags)
+
+
     # Archive-format fixtures validate build inputs, never simulate an SDK reply.
     def inputs(self, folder, data=None, output="note: native-static-libs: -lSystem -lobjc -framework Foundation"):
         previous = runner.ACTIVE
