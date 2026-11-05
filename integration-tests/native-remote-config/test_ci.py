@@ -1,12 +1,8 @@
 """CI protocol/path fixtures only; no native SDK mock or simulated payload."""
 import json
 import ast
-import os
 import re
 import shlex
-import shutil
-import subprocess
-import textwrap
 from pathlib import Path
 import tempfile
 import unittest
@@ -79,21 +75,15 @@ class WorkflowBuildRegressionTests(unittest.TestCase):
         self.assertIsNotNone(match, "action default includes removed tools")
         self.assertEqual(match[1].split(), ["platform-tools"])
 
-    def test_cleanup_is_gated_on_emulator_start_and_safe_without_adb(self):
-        cleanup = self.workflow().split("- name: Stop Emulator", 1)[1]
-        self.assertIn("if: always() && steps.emulator.outputs.started == 'true'", cleanup)
-        script = textwrap.dedent(cleanup.split("run: |", 1)[1])
-        bash = shutil.which("bash")
-        if not bash:
-            candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/bin/bash.exe"
-            bash = str(candidate) if candidate.is_file() else None
-        self.assertIsNotNone(bash, "bash is required to verify cleanup")
-        env = dict(os.environ, PATH="/no-native-tools")
-        env.pop("BASH_ENV", None)
-        result = subprocess.run([bash, "--noprofile", "--norc", "-c", script], env=env,
-                                capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "")
+    def test_emulator_owns_boot_and_runs_the_native_test_without_a_secret(self):
+        workflow = self.workflow()
+        step = workflow.split("uses: reactivecircus/android-emulator-runner@v2", 1)[1].split("      - name:", 1)[0]
+        self.assertNotIn("QONVERSION_PROJECT_KEY", step)
+        self.assertIn("-no-window", step)
+        self.assertIn("get-state", step)
+        self.assertIn(":app:connectedDebugAndroidTest -PrunNativeRemoteConfig=true", step)
+        self.assertIn("&&", step.split("connectedDebugAndroidTest", 1)[1].split("verify-android", 1)[0])
+        self.assertNotIn("- name: Stop Emulator", workflow)
 
     def test_xcode_links_the_exact_archive_path_including_spaces(self):
         project = (runner.ROOT / "ios/project.yml").read_text(encoding="utf-8")

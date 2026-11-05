@@ -220,7 +220,7 @@ def ios(args):
     output = build(target)
     library, native_libraries = ios_link_inputs(target, output)
     architecture = "arm64" if target == "aarch64-apple-ios-sim" else "x86_64"
-    command(["xcrun", "lipo", "-verify_arch", architecture, str(library)])
+    command(["xcrun", "lipo", str(library), "-verify_arch", architecture])
     diagnostic = sanitize(f"Rust static archive verified: {library} ({library.stat().st_size} bytes)\n", ACTIVE.key)
     ACTIVE.capture(diagnostic)
     print(diagnostic, end="", flush=True)
@@ -338,5 +338,41 @@ def main(argv=None):
     return emit_result("PASSED", artifacts=artifacts, elapsed=time.monotonic() - started)
 
 
+REPORT_COMMANDS = ("prepare-ios", "verify-ios", "verify-android", "logs")
+
+
+def workflow_report(argv):
+    parser = argparse.ArgumentParser(description="Prepare or verify a native test report")
+    parser.add_argument("command", choices=REPORT_COMMANDS)
+    parser.add_argument("path", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "prepare-ios":
+            plan = enable_xctest(plistlib.loads(args.path.read_bytes()))
+            args.path.write_bytes(plistlib.dumps(plan))
+        elif args.command == "verify-ios":
+            require_xctest_success(json.loads(args.path.read_text(encoding="utf-8")))
+            print("PASSED: one native XCTest validated Remote Config")
+        elif args.command == "verify-android":
+            # The workflow builds and tests in a fresh mktemp directory per job.
+            require_junit_success(args.path, 0)
+            print("PASSED: one native JUnit test validated Remote Config")
+        else:
+            key = os.environ.get("QONVERSION_PROJECT_KEY", "").strip()
+            if key:
+                for path in sorted(args.path.glob("*.log")):
+                    print(f"--- {path.name} (sanitized tail) ---")
+                    content = sanitize(path.read_text(encoding="utf-8", errors="replace"), key)
+                    # Redact before truncation. Prefix lines to avoid workflow commands.
+                    for line in content[-12000:].splitlines():
+                        print("  | " + line)
+        return 0
+    except (OSError, RuntimeError, ValueError, ET.ParseError, plistlib.InvalidFileException) as error:
+        print(f"Native test {args.command} failed: {error}", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in REPORT_COMMANDS:
+        sys.exit(workflow_report(sys.argv[1:]))
     sys.exit(main())

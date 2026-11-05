@@ -2,8 +2,7 @@ name: Native Remote Config
 
 on:
   push:
-    branches:
-      - test/qonversion-remote-config-ios
+    branches: [test/qonversion-remote-config-ios]
 
 permissions:
   contents: read
@@ -11,6 +10,14 @@ permissions:
 concurrency:
   group: native-remote-config-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TEST_ROOT: integration-tests/native-remote-config
+  CARGO_BUILD_JOBS: "1"
 
 jobs:
   ios:
@@ -21,67 +28,67 @@ jobs:
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
-      CARGO_BUILD_JOBS: "1"
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: Configure Xcode and XcodeGen
-        shell: bash
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare iOS tools
         run: |
           set -euo pipefail
-          test -d "$DEVELOPER_DIR"
           xcodebuild -version
-          xcrun --sdk iphonesimulator --show-sdk-path
-          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
-          xcodegen --version
-          python3 -c 'import re, subprocess; v=subprocess.check_output(["xcodegen", "--version"], text=True); m=re.search(r"(\d+)\.(\d+)", v); assert m and tuple(map(int,m.groups())) >= (2,46), "XcodeGen >= 2.46 required"'
-      - name: Select Rust Simulator target
-        id: target
-        shell: bash
-        run: |
-          set -euo pipefail
+          command -v xcodegen >/dev/null || brew install xcodegen
           case "$(uname -m)" in
             arm64) target=aarch64-apple-ios-sim ;;
             x86_64) target=x86_64-apple-ios ;;
-            *) exit 1 ;;
+            *) echo "Unsupported Simulator architecture" >&2; exit 1 ;;
           esac
-          echo "target=$target" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ steps.target.outputs.target }}
-      - name: Check runner regressions
-        run: python3 -B -m unittest discover -s integration-tests/native-remote-config -p 'test_*.py' -v
-      - name: Boot iOS Simulator
-        id: simulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); devices=[d for runtime,items in data["devices"].items() if "iOS-18-5" in runtime for d in items if d.get("isAvailable") and d["name"].startswith("iPhone")]; assert devices, "iOS 18.5 iPhone Simulator missing"; print(devices[0]["udid"])')
-          state=$(xcrun simctl list devices -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["state"] for items in d["devices"].values() for x in items if x["udid"]==sys.argv[1]))' "$device")
-          if [ "$state" != Booted ]; then xcrun simctl boot "$device"; fi
-          xcrun simctl bootstatus "$device" -b
-          echo "device=$device" >> "$GITHUB_OUTPUT"
-      # No build caches. The Project Key is provided only to this execution step.
-      - name: Execute real Rust Swift SDK test
-        id: native
+          rustup target add "$target"
+          native_root=$(mktemp -d "$RUNNER_TEMP/qonversion-native.XXXXXX")
+          printf 'RUST_TARGET=%s\nNATIVE_ROOT=%s\n' "$target" "$native_root" >> "$GITHUB_ENV"
+      - name: Build Rust static library
         env:
           QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 -B integration-tests/native-remote-config/ci.py ios --device '${{ steps.simulator.outputs.device }}'
-      - name: Upload only validated sanitized diagnostics
-        if: always() && steps.native.outputs.safe_artifacts != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-remote-config-ios-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.native.outputs.safe_artifacts }}
-          if-no-files-found: error
-          retention-days: 7
-      - name: Stop Simulator
-        if: always() && steps.simulator.outputs.device != ''
-        run: xcrun simctl shutdown '${{ steps.simulator.outputs.device }}'
+        run: |
+          set -euo pipefail
+          : "${QONVERSION_PROJECT_KEY:?SDK Project Key is required in Environment test}"
+          CARGO_TARGET_DIR="$NATIVE_ROOT/target" cargo rustc --manifest-path "$TEST_ROOT/Cargo.toml" \
+            --lib --features native-sdk-test --target "$RUST_TARGET" -- --print native-static-libs \
+            > "$NATIVE_ROOT/cargo.log" 2>&1
+      - name: Link and run XCTest
+        run: |
+          set -euo pipefail
+          library="$NATIVE_ROOT/target/$RUST_TARGET/debug/libnative_remote_config_test.a"
+          test -s "$library" || { echo "Missing Rust static archive" >&2; exit 1; }
+          xcrun ar -t "$library" >/dev/null
+          xcrun lipo "$library" -verify_arch "$(uname -m)"
+          native_libs=$(sed -n 's/^note: native-static-libs: //p' "$NATIVE_ROOT/cargo.log" | tail -n 1)
+          test -n "$native_libs" || { echo "Missing rustc native-static-libs" >&2; exit 1; }
+          (cd "$TEST_ROOT/ios" && RUST_LIBRARY="$library" xcodegen generate) > "$NATIVE_ROOT/xcodegen.log" 2>&1
+          device=$(xcrun simctl create NativeRemoteConfig com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-18-5)
+          trap 'xcrun simctl delete "$device" >/dev/null 2>&1 || true' EXIT
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          destination="platform=iOS Simulator,id=$device"
+          derived="$NATIVE_ROOT/DerivedData"
+          xcodebuild -project "$TEST_ROOT/ios/NativeRemoteConfig.xcodeproj" -scheme NativeRemoteConfig \
+            -destination "$destination" -derivedDataPath "$derived" build-for-testing \
+            "RUST_NATIVE_LIBS=$native_libs" > "$NATIVE_ROOT/xcode-build.log" 2>&1
+          set -- "$derived"/Build/Products/*.xctestrun
+          test "$#" -eq 1 && test -f "$1" || { echo "Expected exactly one XCTest plan" >&2; exit 1; }
+          python3 -B "$TEST_ROOT/run.py" prepare-ios "$1"
+          xcodebuild test-without-building -xctestrun "$1" -destination "$destination" \
+            -parallel-testing-enabled NO \
+            -only-testing:NativeRemoteConfigTests/RemoteConfigTests/testRealRemoteConfig \
+            -resultBundlePath "$NATIVE_ROOT/result.xcresult" > "$NATIVE_ROOT/xctest.log" 2>&1
+          xcrun xcresulttool get test-results summary --path "$NATIVE_ROOT/result.xcresult" \
+            > "$NATIVE_ROOT/summary.json" 2> "$NATIVE_ROOT/xcresulttool.log"
+          python3 -B "$TEST_ROOT/run.py" verify-ios "$NATIVE_ROOT/summary.json"
+      - name: Show sanitized failure diagnostics
+        if: failure() && env.NATIVE_ROOT != ''
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 -B "$TEST_ROOT/run.py" logs "$NATIVE_ROOT"
 
   android:
     name: Native Rust SDK - Android
@@ -89,22 +96,16 @@ jobs:
     runs-on: ubuntu-24.04
     environment: test
     timeout-minutes: 90
-    env:
-      CARGO_BUILD_JOBS: "1"
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
         with:
-          # Override the action default, which includes removed legacy tools.
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -115,50 +116,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-linux-android
-      - name: Install Android SDK and NDK
-        shell: bash
+      - name: Prepare Android tools and KVM
         run: |
           set -euo pipefail
-          sdkmanager 'platform-tools' 'emulator' 'platforms;android-34' 'build-tools;34.0.0' 'ndk;29.0.14206865' 'system-images;android-34;google_apis;x86_64'
+          sdkmanager 'ndk;29.0.14206865' 'platforms;android-34' 'build-tools;34.0.0'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
-          java -version
-          gradle --version
-      - name: Check runner regressions
-        run: python3 -B -m unittest discover -s integration-tests/native-remote-config -p 'test_*.py' -v
-      - name: Boot Android Emulator without UI
-        id: emulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -e /dev/kvm
+          native_root=$(mktemp -d "$RUNNER_TEMP/qonversion-native.XXXXXX")
+          echo "NATIVE_ROOT=$native_root" >> "$GITHUB_ENV"
+          test -c /dev/kvm
           sudo chmod 666 /dev/kvm
-          echo no | avdmanager create avd --force --name native-remote-config --package 'system-images;android-34;google_apis;x86_64'
-          nohup "$ANDROID_HOME/emulator/emulator" -avd native-remote-config -port 5554 -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect > "$RUNNER_TEMP/native-emulator-private.log" 2>&1 &
-          echo "started=true" >> "$GITHUB_OUTPUT"
-          timeout 300 adb -s emulator-5554 wait-for-device
-          booted=false
-          for attempt in $(seq 1 150); do
-            if [ "$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; then booted=true; break; fi
-            sleep 2
-          done
-          test "$booted" = true
-      - name: Execute real Rust Kotlin SDK test
-        id: native
+      - name: Build Rust JNI library
         env:
           QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 -B integration-tests/native-remote-config/ci.py android --device emulator-5554
-      - name: Upload only validated sanitized diagnostics
-        if: always() && steps.native.outputs.safe_artifacts != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-remote-config-android-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.native.outputs.safe_artifacts }}
-          if-no-files-found: error
-          retention-days: 7
-      - name: Stop Emulator
-        if: always() && steps.emulator.outputs.started == 'true'
-        shell: bash
         run: |
-          if command -v adb >/dev/null && adb -s emulator-5554 get-state >/dev/null 2>&1; then
-            adb -s emulator-5554 emu kill
-          fi
+          set -euo pipefail
+          : "${QONVERSION_PROJECT_KEY:?SDK Project Key is required in Environment test}"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"
+          CARGO_TARGET_DIR="$NATIVE_ROOT/target" cargo build --manifest-path "$TEST_ROOT/Cargo.toml" \
+            --lib --features native-sdk-test --target x86_64-linux-android > "$NATIVE_ROOT/cargo.log" 2>&1
+          install -D -m 600 "$NATIVE_ROOT/target/x86_64-linux-android/debug/libnative_remote_config_test.so" \
+            "$NATIVE_ROOT/jniLibs/x86_64/libnative_remote_config_test.so"
+      - name: Boot emulator and run JUnit
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          emulator-boot-timeout: 300
+          disable-linux-hw-accel: false
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader
+          script: >-
+            test "$(adb -s "$ANDROID_SERIAL" get-state)" = device &&
+            QONVERSION_TEST_RAW_DIR="$NATIVE_ROOT" GRADLE_USER_HOME="$NATIVE_ROOT/gradle-home"
+            gradle -p "$TEST_ROOT/android" --no-daemon --console=plain --max-workers=1
+            --project-cache-dir "$NATIVE_ROOT/gradle-cache"
+            :app:connectedDebugAndroidTest -PrunNativeRemoteConfig=true > "$NATIVE_ROOT/gradle.log" 2>&1 &&
+            python3 -B "$TEST_ROOT/run.py" verify-android "$NATIVE_ROOT/gradle-build/app/outputs/androidTest-results/connected"
+      - name: Show sanitized failure diagnostics
+        if: failure() && env.NATIVE_ROOT != ''
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 -B "$TEST_ROOT/run.py" logs "$NATIVE_ROOT"
