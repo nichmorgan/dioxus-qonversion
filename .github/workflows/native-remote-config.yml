@@ -1,0 +1,166 @@
+name: Native Remote Config
+
+on:
+  push:
+    branches: [test/qonversion-remote-config-ios]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-remote-config-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TEST_ROOT: integration-tests/native-remote-config
+  CARGO_BUILD_JOBS: "1"
+
+jobs:
+  ios:
+    name: Native Rust SDK - iOS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test/qonversion-remote-config-ios'
+    runs-on: macos-15
+    environment: test
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare iOS tools
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          command -v xcodegen >/dev/null || brew install xcodegen
+          case "$(uname -m)" in
+            arm64) target=aarch64-apple-ios-sim ;;
+            x86_64) target=x86_64-apple-ios ;;
+            *) echo "Unsupported Simulator architecture" >&2; exit 1 ;;
+          esac
+          rustup target add "$target"
+          native_root=$(mktemp -d "$RUNNER_TEMP/qonversion-native.XXXXXX")
+          printf 'RUST_TARGET=%s\nNATIVE_ROOT=%s\n' "$target" "$native_root" >> "$GITHUB_ENV"
+      - name: Build Rust static library
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: |
+          set -euo pipefail
+          : "${QONVERSION_PROJECT_KEY:?SDK Project Key is required in Environment test}"
+          CARGO_TARGET_DIR="$NATIVE_ROOT/target" cargo rustc --manifest-path "$TEST_ROOT/Cargo.toml" \
+            --lib --features native-sdk-test --target "$RUST_TARGET" -- --print native-static-libs \
+            > "$NATIVE_ROOT/cargo.log" 2>&1
+      - name: Link and run XCTest
+        run: |
+          set -euo pipefail
+          library="$NATIVE_ROOT/target/$RUST_TARGET/debug/libnative_remote_config_test.a"
+          test -s "$library" || { echo "Missing Rust static archive" >&2; exit 1; }
+          xcrun ar -t "$library" >/dev/null
+          xcrun lipo "$library" -verify_arch "$(uname -m)"
+          native_libs=$(python3 -B "$TEST_ROOT/run.py" rust-native-libs "$NATIVE_ROOT/cargo.log")
+          (cd "$TEST_ROOT/ios" && RUST_LIBRARY="$library" xcodegen generate) > "$NATIVE_ROOT/xcodegen.log" 2>&1
+          device=$(xcrun simctl create NativeRemoteConfig com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-18-5)
+          trap 'xcrun simctl delete "$device" >/dev/null 2>&1 || true' EXIT
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          destination="platform=iOS Simulator,id=$device"
+          derived="$NATIVE_ROOT/DerivedData"
+          xcodebuild -project "$TEST_ROOT/ios/NativeRemoteConfig.xcodeproj" -scheme NativeRemoteConfig \
+            -destination "$destination" -derivedDataPath "$derived" build-for-testing \
+            "RUST_NATIVE_LIBS=$native_libs" > "$NATIVE_ROOT/xcode-build.log" 2>&1
+          set -- "$derived"/Build/Products/*.xctestrun
+          test "$#" -eq 1 && test -f "$1" || { echo "Expected exactly one XCTest plan" >&2; exit 1; }
+          python3 -B "$TEST_ROOT/run.py" prepare-ios "$1"
+          xcodebuild test-without-building -xctestrun "$1" -destination "$destination" \
+            -parallel-testing-enabled NO \
+            -only-testing:NativeRemoteConfigTests/RemoteConfigTests/testRealRemoteConfig \
+            -resultBundlePath "$NATIVE_ROOT/result.xcresult" > "$NATIVE_ROOT/xctest.log" 2>&1
+          xcrun xcresulttool get test-results summary --path "$NATIVE_ROOT/result.xcresult" \
+            > "$NATIVE_ROOT/summary.json" 2> "$NATIVE_ROOT/xcresulttool.log"
+          python3 -B "$TEST_ROOT/run.py" verify-ios "$NATIVE_ROOT/summary.json"
+      - name: Show sanitized failure diagnostics
+        if: failure() && env.NATIVE_ROOT != ''
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 -B "$TEST_ROOT/run.py" logs "$NATIVE_ROOT"
+
+  android:
+    name: Native Rust SDK - Android
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test/qonversion-remote-config-ios'
+    runs-on: ubuntu-24.04
+    environment: test
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.6"
+          cache-disabled: true
+          dependency-graph: disabled
+          add-job-summary: never
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - name: Prepare Android tools and KVM
+        run: |
+          set -euo pipefail
+          sdkmanager 'ndk;29.0.14206865' 'platforms;android-34' 'build-tools;34.0.0'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          native_root=$(mktemp -d "$RUNNER_TEMP/qonversion-native.XXXXXX")
+          echo "NATIVE_ROOT=$native_root" >> "$GITHUB_ENV"
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+      - name: Build Rust JNI library
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: |
+          set -euo pipefail
+          : "${QONVERSION_PROJECT_KEY:?SDK Project Key is required in Environment test}"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"
+          CARGO_TARGET_DIR="$NATIVE_ROOT/target" cargo build --manifest-path "$TEST_ROOT/Cargo.toml" \
+            --lib --features native-sdk-test --target x86_64-linux-android > "$NATIVE_ROOT/cargo.log" 2>&1
+          install -D -m 600 "$NATIVE_ROOT/target/x86_64-linux-android/debug/libnative_remote_config_test.so" \
+            "$NATIVE_ROOT/jniLibs/x86_64/libnative_remote_config_test.so"
+      - name: Validate Gradle configuration and assemble instrumentation
+        run: |
+          set -euo pipefail
+          export QONVERSION_TEST_RAW_DIR="$NATIVE_ROOT" GRADLE_USER_HOME="$NATIVE_ROOT/gradle-home"
+          options=(-p "$TEST_ROOT/android" --no-daemon --console=plain --max-workers=1
+                   --project-cache-dir "$NATIVE_ROOT/gradle-cache" -PrunNativeRemoteConfig=true)
+          gradle "${options[@]}" help > "$NATIVE_ROOT/gradle-config.log" 2>&1
+          gradle "${options[@]}" :app:assembleDebug :app:assembleDebugAndroidTest > "$NATIVE_ROOT/gradle-build.log" 2>&1
+      - name: Boot emulator and run JUnit
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          emulator-boot-timeout: 300
+          disable-linux-hw-accel: false
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader
+          script: >-
+            test "$(adb -s "$ANDROID_SERIAL" get-state)" = device &&
+            QONVERSION_TEST_RAW_DIR="$NATIVE_ROOT" GRADLE_USER_HOME="$NATIVE_ROOT/gradle-home"
+            gradle -p "$TEST_ROOT/android" --no-daemon --console=plain --max-workers=1
+            --project-cache-dir "$NATIVE_ROOT/gradle-cache"
+            :app:connectedDebugAndroidTest -PrunNativeRemoteConfig=true > "$NATIVE_ROOT/gradle.log" 2>&1 &&
+            python3 -B "$TEST_ROOT/run.py" verify-android "$NATIVE_ROOT/gradle-build/app/outputs/androidTest-results/connected"
+      - name: Show sanitized failure diagnostics
+        if: failure() && env.NATIVE_ROOT != ''
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 -B "$TEST_ROOT/run.py" logs "$NATIVE_ROOT"
