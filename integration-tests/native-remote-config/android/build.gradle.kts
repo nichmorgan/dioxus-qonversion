@@ -1,5 +1,7 @@
 plugins {
     id("com.android.application") version "8.4.2" apply false
+    // Register the version for the shared AGP classpath used by the production host.
+    id("com.android.library") version "8.4.2" apply false
     kotlin("android") version "1.9.24" apply false
 }
 
