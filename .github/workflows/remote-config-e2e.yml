@@ -3,7 +3,11 @@ name: Remote Config end to end
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+      # GitHub only dispatches a workflow that already exists on the default
+      # branch. This branch is how the real SDK check runs before that merge.
+      - test/qonversion-remote-config-ios
 
 permissions:
   contents: read

@@ -16,8 +16,9 @@ the test.
 ## GitHub Actions
 
 `.github/workflows/remote-config-e2e.yml` runs on `workflow_dispatch` and on
-pushes to `main`. It uses the `test` environment secret `QONVERSION_PROJECT_KEY`
-(the SDK Project Key, not a Secret Key).
+pushes to `main` and `test/qonversion-remote-config-ios`. It uses the `test`
+environment secret `QONVERSION_PROJECT_KEY` (the SDK Project Key, not a Secret
+Key).
 
 The Android job builds this crate with `--features native-sdk-test`, loads it
 through JNI, and runs the instrumentation test on an API 34 emulator with

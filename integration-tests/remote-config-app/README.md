@@ -12,4 +12,6 @@ Config for context key `dioxus_integration_test`:
 
 Set `QONVERSION_PROJECT_KEY` to the SDK Project Key before building. Do not
 commit the key. The iOS job in `.github/workflows/remote-config-e2e.yml` builds
-this crate with `dx` and drives `maestro/`.
+this crate with `dx` and drives `maestro/`. That workflow runs on pushes to
+`main` and `test/qonversion-remote-config-ios`, and on manual dispatch once
+the file is on the default branch.
