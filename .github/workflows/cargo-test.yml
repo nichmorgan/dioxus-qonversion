@@ -1,0 +1,58 @@
+name: Cargo test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: iOS
+            os: macos-latest
+            target: aarch64-apple-ios-sim
+            platform: ios
+          - name: Android
+            os: ubuntu-latest
+            target: aarch64-linux-android
+            platform: android
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}-${{ matrix.target }}
+
+      - name: Boot iOS Simulator
+        if: matrix.platform == 'ios'
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -E -o "[0-9A-F-]{36}")
+          xcrun simctl boot "$DEVICE" || true
+          xcrun simctl bootstatus "$DEVICE" -b
+
+      - name: Test iOS
+        if: matrix.platform == 'ios'
+        env:
+          CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER: xcrun simctl spawn booted
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Test Android
+        if: matrix.platform == 'android'
+        uses: ClementTsang/cargo-action@v0.0.7
+        with:
+          command: test
+          args: --target ${{ matrix.target }}
+          use-cross: true
+          cross-version: main

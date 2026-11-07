@@ -81,14 +81,25 @@ pub enum ExperimentGroupType {
 /// Fetch Remote Config for a dashboard context key.
 ///
 /// Runs on the serial SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`] (see
-/// [`crate::set_sdk_timeout`]). Blocking wait: safe to call from Dioxus `spawn`
-/// / a background thread; avoid the UI thread.
+/// [`crate::set_sdk_timeout`]). Blocking wait: call from a background thread.
+/// The UI thread returns [`QonversionError::MainThread`]. On iOS, Dioxus
+/// `spawn` runs on the UI thread — await [`remote_config_async`] from `spawn`.
 ///
 /// An empty payload map is success. SDK failures are
 /// [`QonversionError::Native`] or [`QonversionError::Timeout`].
 pub fn remote_config(context_key: &str) -> Result<RemoteConfig, QonversionError> {
     let context_key = crate::helpers::require_non_empty("context_key", context_key)?;
     fetch(Some(context_key.to_string()))
+}
+
+/// [`remote_config`] for Dioxus `spawn`.
+///
+/// The SDK call runs on the serial worker. The future itself does not block,
+/// so it is safe to await on the iOS UI thread. The native host still enforces
+/// [`crate::sdk_timeout`].
+pub async fn remote_config_async(context_key: &str) -> Result<RemoteConfig, QonversionError> {
+    let context_key = crate::helpers::require_non_empty("context_key", context_key)?;
+    fetch_async(Some(context_key.to_string())).await
 }
 
 /// Fetch Remote Config for the dashboard empty context key.
@@ -98,12 +109,24 @@ pub fn remote_config_default() -> Result<RemoteConfig, QonversionError> {
     fetch(None)
 }
 
+/// [`remote_config_default`] for Dioxus `spawn`. See [`remote_config_async`].
+pub async fn remote_config_default_async() -> Result<RemoteConfig, QonversionError> {
+    fetch_async(None).await
+}
+
 fn fetch(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
     init::require_initialized()?;
-    queue::run_serial(move || {
-        let envelope = native::remote_config(context_key.as_deref())?;
-        parse_envelope(&envelope)
-    })
+    queue::run_serial(move || fetch_on_worker(context_key))
+}
+
+async fn fetch_async(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
+    init::require_initialized()?;
+    queue::run_serial_async(move || fetch_on_worker(context_key)).await
+}
+
+fn fetch_on_worker(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
+    let envelope = native::remote_config(context_key.as_deref())?;
+    parse_envelope(&envelope)
 }
 
 /// Parse the native host JSON envelope into [`RemoteConfig`].
@@ -212,6 +235,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn native_error_envelope_propagates_through_async_queue() {
+        let _guard = queue::test_lock();
+        let err = queue::block_on(queue::run_serial_async(|| {
+            parse_envelope(r#"{"ok":false,"error":"simulated SDK failure"}"#)
+        }))
+        .expect_err("native error must propagate through the async SDK queue");
+        assert_eq!(
+            err,
+            QonversionError::Native {
+                message: "simulated SDK failure".into()
+            }
+        );
+    }
+
+    #[test]
     fn empty_payload_is_success() {
         let config = parse_envelope(r#"{"ok":true,"payload":{}}"#).expect("empty payload");
         assert!(config.payload.is_empty());
@@ -220,9 +258,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_payload_is_empty_map() {
-        let config = parse_envelope(r#"{"ok":true}"#).expect("missing payload");
-        assert!(config.payload.is_empty());
+    fn missing_or_null_payload_is_empty_map() {
+        for json in [r#"{"ok":true}"#, r#"{"ok":true,"payload":null}"#] {
+            let config = parse_envelope(json).expect(json);
+            assert!(config.payload.is_empty(), "{json}");
+            assert!(config.source.is_none(), "{json}");
+            assert!(config.experiment.is_none(), "{json}");
+        }
     }
 
     #[test]
@@ -238,15 +280,38 @@ mod tests {
     }
 
     #[test]
-    fn payload_array_is_error() {
-        let err = parse_envelope(r#"{"ok":true,"payload":[]}"#).expect_err("array payload");
-        assert!(matches!(err, QonversionError::Native { .. }));
+    fn non_object_payload_is_error() {
+        for payload in [json!([]), json!(true), json!(42), json!("not-an-object")] {
+            let envelope = json!({ "ok": true, "payload": payload });
+            let err = parse_envelope(&envelope.to_string())
+                .expect_err("non-object, non-null payload must fail");
+            assert_eq!(
+                err,
+                QonversionError::Native {
+                    message: "remote config payload must be a JSON object".into()
+                }
+            );
+        }
     }
 
     #[test]
     fn invalid_json_is_error() {
-        let err = parse_envelope("not-json").expect_err("invalid json");
-        assert!(matches!(err, QonversionError::Native { .. }));
+        for malformed in [
+            "not-json",
+            r#"{"ok":true,"payload":{"flag":true}"#,
+            r#"{"ok":true,"payload":{"flag":true,}}"#,
+        ] {
+            let err = parse_envelope(malformed).expect_err("malformed JSON must fail");
+            match err {
+                QonversionError::Native { message } => {
+                    assert!(
+                        message.starts_with("invalid remote config envelope:"),
+                        "{message}"
+                    );
+                }
+                other => panic!("expected JSON parsing error, got {other:?}"),
+            }
+        }
     }
 
     #[test]

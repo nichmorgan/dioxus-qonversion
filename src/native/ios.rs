@@ -1,105 +1,137 @@
 //! iOS: call the ObjC-visible Swift host shim.
 //!
-//! The app must:
-//! 1. Add the Qonversion iOS SDK (SPM, ≥ 6.13.0) which includes No-Codes.
-//! 2. Compile [`ios/DioxusQonversionHost.swift`](../../../ios/DioxusQonversionHost.swift)
-//!    into the Dioxus iOS target.
+//! Dioxus CLI 0.7+ compiles and embeds the ios/ Swift package registered by
+//! ios_plugin. A host that is already loaded (an app that links `ios/` itself)
+//! is used as-is. Otherwise the manganis loader opens
+//! `Frameworks/DioxusSwiftPlugins.framework`.
 
 use std::ffi::CStr;
+use std::os::raw::{c_char, c_void};
+use std::sync::OnceLock;
 
-use objc::runtime::{Class, Object};
+use objc::rc::autoreleasepool;
+use objc::runtime::{Class, Object, BOOL, NO};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::config::{Environment, InitConfig};
 use crate::error::QonversionError;
 
+const HOST_CLASS_NAME: &str = "DioxusQonversionHost";
+
 pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
-    let host = host_class()?;
-    let project_key = nsstring(&config.project_key)?;
-    let sandbox = matches!(config.environment, Environment::Sandbox);
+    autoreleasepool(|| {
+        let host = host_class()?;
+        if !supports_init(host) {
+            return Err(QonversionError::HostMissing(
+                "DioxusQonversionHost does not accept screen callbacks. Rebuild the iOS app with the matching Swift host.".into(),
+            ));
+        }
+        let project_key = nsstring(&config.project_key)?;
+        let sandbox = matches!(config.environment, Environment::Sandbox);
+        // Static functions stay valid for the life of the Rust image. The objc
+        // crate's message encoder accepts pointers, not fn items.
+        let failed: extern "C" fn(i32, *const c_char) =
+            crate::screen::dioxus_qonversion_notify_screen_failed;
+        let event: extern "C" fn(*const c_char) =
+            crate::screen::dioxus_qonversion_notify_screen_event;
 
-    let err: *mut Object = unsafe {
-        msg_send![
-            host,
-            initializeWithProjectKey: project_key
-            sandbox: sandbox as u8
-        ]
-    };
+        let err: *mut Object = unsafe {
+            msg_send![
+                host,
+                initializeWithProjectKey: project_key
+                sandbox: sandbox as u8
+                screenFailed: failed as *const c_void
+                screenEvent: event as *const c_void
+            ]
+        };
+        map_host_result(err)
+    })
+}
 
-    map_host_result(err)
+fn supports_init(host: &Class) -> bool {
+    let selector = sel!(initializeWithProjectKey:sandbox:screenFailed:screenEvent:);
+    let supported: BOOL = unsafe { msg_send![host, respondsToSelector: selector] };
+    supported != NO
 }
 
 pub(crate) fn show_screen(context_key: &str) -> Result<(), QonversionError> {
-    let host = host_class()?;
-    let key = nsstring(context_key)?;
-
-    let err: *mut Object = unsafe { msg_send![host, showScreenWithContextKey: key] };
-
-    map_host_result(err)
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let key = nsstring(context_key)?;
+        let err: *mut Object = unsafe { msg_send![host, showScreenWithContextKey: key] };
+        map_host_result(err)
+    })
 }
 
 pub(crate) fn load_screen(context_key: &str) -> Result<String, QonversionError> {
-    let host = host_class()?;
-    let key = nsstring(context_key)?;
-    let timeout_ms = crate::queue::timeout_ms();
-
-    let envelope: *mut Object =
-        unsafe { msg_send![host, loadScreenWithContextKey: key timeoutMs: timeout_ms] };
-    nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
-        message: "DioxusQonversionHost.loadScreenWithContextKey returned nil".into(),
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let key = nsstring(context_key)?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let envelope: *mut Object =
+            unsafe { msg_send![host, loadScreenWithContextKey: key timeoutMs: timeout_ms] };
+        nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
+            message: "DioxusQonversionHost.loadScreenWithContextKey returned nil".into(),
+        })
     })
 }
 
 pub(crate) fn identify(user_id: &str) -> Result<(), QonversionError> {
-    let host = host_class()?;
-    let id = nsstring(user_id)?;
-    let timeout_ms = crate::queue::timeout_ms();
-
-    let err: *mut Object = unsafe { msg_send![host, identifyWithUserId: id timeoutMs: timeout_ms] };
-
-    map_host_result(err)
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let id = nsstring(user_id)?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let err: *mut Object =
+            unsafe { msg_send![host, identifyWithUserId: id timeoutMs: timeout_ms] };
+        map_host_result(err)
+    })
 }
 
 pub(crate) fn logout() -> Result<(), QonversionError> {
-    let host = host_class()?;
-    let timeout_ms = crate::queue::timeout_ms();
-
-    let err: *mut Object = unsafe { msg_send![host, logoutWithTimeoutMs: timeout_ms] };
-
-    map_host_result(err)
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let err: *mut Object = unsafe { msg_send![host, logoutWithTimeoutMs: timeout_ms] };
+        map_host_result(err)
+    })
 }
 
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
-    let host = host_class()?;
-    let key = match context_key {
-        Some(key) => nsstring(key)?,
-        None => std::ptr::null_mut(),
-    };
-    let timeout_ms = crate::queue::timeout_ms();
-
-    let envelope: *mut Object =
-        unsafe { msg_send![host, remoteConfigWithContextKey: key timeoutMs: timeout_ms] };
-    nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
-        message: "DioxusQonversionHost.remoteConfigWithContextKey returned nil".into(),
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let key = match context_key {
+            Some(key) => nsstring(key)?,
+            None => std::ptr::null_mut(),
+        };
+        let timeout_ms = crate::queue::timeout_ms();
+        let envelope: *mut Object =
+            unsafe { msg_send![host, remoteConfigWithContextKey: key timeoutMs: timeout_ms] };
+        nsstring_to_rust(envelope).ok_or_else(|| QonversionError::Native {
+            message: "DioxusQonversionHost.remoteConfigWithContextKey returned nil".into(),
+        })
     })
 }
 
 pub(crate) fn check_entitlements() -> Result<String, QonversionError> {
-    let host = host_class()?;
-    let timeout_ms = crate::queue::timeout_ms();
-    let envelope: *mut Object =
-        unsafe { msg_send![host, checkEntitlementsWithTimeoutMs: timeout_ms] };
-    require_host_envelope(
-        envelope,
-        "DioxusQonversionHost.checkEntitlementsWithTimeoutMs",
-    )
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let envelope: *mut Object =
+            unsafe { msg_send![host, checkEntitlementsWithTimeoutMs: timeout_ms] };
+        require_host_envelope(
+            envelope,
+            "DioxusQonversionHost.checkEntitlementsWithTimeoutMs",
+        )
+    })
 }
 
 pub(crate) fn restore() -> Result<String, QonversionError> {
-    let host = host_class()?;
-    let timeout_ms = crate::queue::timeout_ms();
-    let envelope: *mut Object = unsafe { msg_send![host, restoreWithTimeoutMs: timeout_ms] };
-    require_host_envelope(envelope, "DioxusQonversionHost.restoreWithTimeoutMs")
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let envelope: *mut Object = unsafe { msg_send![host, restoreWithTimeoutMs: timeout_ms] };
+        require_host_envelope(envelope, "DioxusQonversionHost.restoreWithTimeoutMs")
+    })
 }
 
 pub(crate) fn is_main_thread() -> bool {
@@ -110,11 +142,32 @@ pub(crate) fn is_main_thread() -> bool {
 }
 
 fn host_class() -> Result<&'static Class, QonversionError> {
-    Class::get("DioxusQonversionHost").ok_or_else(|| {
-        QonversionError::HostMissing(
-            "DioxusQonversionHost not found. Compile ios/DioxusQonversionHost.swift into the iOS app and link the Qonversion SDK (≥ 6.13.0).".into(),
-        )
+    // An app that links the host itself already has the class registered.
+    if let Some(host) = Class::get(HOST_CLASS_NAME) {
+        return Ok(host);
+    }
+    load_bundled_host()?;
+    Class::get(HOST_CLASS_NAME).ok_or_else(|| {
+        QonversionError::HostMissing(format!(
+            "{HOST_CLASS_NAME} was not registered after loading DioxusSwiftPlugins.framework."
+        ))
     })
+}
+
+/// Open dx's umbrella framework once, via the loader manganis generates.
+/// dx 0.7.10 installs only that framework, so there is no per-product fallback.
+fn load_bundled_host() -> Result<(), QonversionError> {
+    static LOADED: OnceLock<Result<(), String>> = OnceLock::new();
+    match LOADED.get_or_init(|| {
+        super::ios_plugin::DioxusQonversionHost::new()
+            .map(drop)
+            .map_err(str::to_string)
+    }) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(QonversionError::HostMissing(format!(
+            "{HOST_CLASS_NAME} not found ({error}). Build with Dioxus CLI 0.7+ so ios/ is embedded as Frameworks/DioxusSwiftPlugins.framework. Without dx, link the local ios/ package. dx 0.7.10 embeds only one Swift plugin framework."
+        ))),
+    }
 }
 
 fn require_host_envelope(ptr: *mut Object, what: &str) -> Result<String, QonversionError> {
@@ -144,12 +197,13 @@ fn nsstring(s: &str) -> Result<*mut Object, QonversionError> {
         ]
     };
     if ns_string.is_null() {
-        Err(QonversionError::Native {
+        return Err(QonversionError::Native {
             message: "failed to allocate NSString".into(),
-        })
-    } else {
-        Ok(ns_string)
+        });
     }
+    // The caller copies any returned string before this pool drains.
+    let _: *mut Object = unsafe { msg_send![ns_string, autorelease] };
+    Ok(ns_string)
 }
 
 fn nsstring_to_rust(s: *mut Object) -> Option<String> {

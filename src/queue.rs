@@ -59,22 +59,18 @@ pub(crate) fn timeout_ms() -> i64 {
     i64::try_from(sdk_timeout().as_millis()).unwrap_or(i64::MAX)
 }
 
-/// Run `work` on the single SDK worker thread.
-///
-/// Waits up to [`sdk_timeout`] for a result. On timeout returns
-/// [`QonversionError::Timeout`] without cancelling `work`. The native wait
-/// uses the same budget so the worker is freed when the SDK callback never
-/// arrives. Refuses [`QonversionError::MainThread`] if invoked on the UI thread.
-pub(crate) fn run_serial<T, F>(work: F) -> Result<T, QonversionError>
+/// Extra wait so the native host's timeout, which starts after dequeue, can
+/// return its typed timeout before the blocking caller gives up.
+const CALLER_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
+
+fn enqueue<T, F>(
+    work: F,
+    reply: impl FnOnce(Result<T, QonversionError>) + Send + 'static,
+) -> Result<(), QonversionError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, QonversionError> + Send + 'static,
 {
-    if crate::native::is_main_thread() {
-        return Err(QonversionError::MainThread);
-    }
-    let timeout = sdk_timeout();
-    let (reply_tx, reply_rx) = mpsc::channel();
     job_sender()
         .send(Job {
             work: Box::new(move || {
@@ -85,19 +81,86 @@ where
                 });
                 // Caller may have timed out and dropped the receiver —
                 // that is intentional; native work still completed.
-                let _ = reply_tx.send(result);
+                reply(result);
             }),
         })
         .map_err(|_| QonversionError::Native {
             message: "Qonversion SDK queue is closed".into(),
-        })?;
+        })
+}
 
-    match reply_rx.recv_timeout(timeout) {
+/// Run `work` on the single SDK worker thread.
+///
+/// Waits up to [`sdk_timeout`] plus a short grace for a result. The grace lets
+/// the native host, which starts the same budget after the job is dequeued,
+/// return its typed timeout first. On timeout returns
+/// [`QonversionError::Timeout`] without cancelling `work`. Refuses
+/// [`QonversionError::MainThread`] if invoked on the UI thread. From Dioxus
+/// `spawn` (the UI thread on iOS), use [`run_serial_async`].
+pub(crate) fn run_serial<T, F>(work: F) -> Result<T, QonversionError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, QonversionError> + Send + 'static,
+{
+    if crate::native::is_main_thread() {
+        return Err(QonversionError::MainThread);
+    }
+    let timeout = sdk_timeout();
+    let (reply_tx, reply_rx) = mpsc::channel();
+    enqueue(work, move |result| {
+        let _ = reply_tx.send(result);
+    })?;
+
+    match reply_rx.recv_timeout(timeout.saturating_add(CALLER_TIMEOUT_GRACE)) {
         Ok(result) => result,
         Err(RecvTimeoutError::Timeout) => Err(QonversionError::Timeout { timeout }),
         Err(RecvTimeoutError::Disconnected) => Err(QonversionError::Native {
             message: "Qonversion SDK worker disconnected before completing".into(),
         }),
+    }
+}
+
+/// Run `work` on the SDK worker and await the result without blocking the caller.
+///
+/// Does not refuse the UI thread: the native host bounds the call with
+/// [`timeout_ms`]. This is the path Dioxus `spawn` must use on iOS, where
+/// spawned futures are polled on the main thread.
+pub(crate) async fn run_serial_async<T, F>(work: F) -> Result<T, QonversionError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, QonversionError> + Send + 'static,
+{
+    let (reply_tx, reply_rx) = futures_channel::oneshot::channel();
+    enqueue(work, move |result| {
+        let _ = reply_tx.send(result);
+    })?;
+    reply_rx.await.map_err(|_| QonversionError::Native {
+        message: "Qonversion SDK worker disconnected before completing".into(),
+    })?
+}
+
+/// Drive a future to completion. Test-only: the crate does not ship an executor.
+#[cfg(test)]
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ThreadWaker(thread::Thread);
+
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let mut future = Box::pin(future);
+    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
     }
 }
 
@@ -145,12 +208,15 @@ mod tests {
         let _guard = test_lock();
         off_main(|| {
             let _restore = RestoreSdkTimeout;
-            set_sdk_timeout(Duration::from_millis(40));
+            let budget = Duration::from_millis(40);
+            set_sdk_timeout(budget);
             let finished = Arc::new(AtomicBool::new(false));
             let flag = Arc::clone(&finished);
 
             let err = run_serial(move || {
-                thread::sleep(Duration::from_millis(150));
+                // Outlast the caller budget and the grace that lets a native
+                // timeout win. This job never reaches the native host.
+                thread::sleep(budget + CALLER_TIMEOUT_GRACE + Duration::from_millis(200));
                 flag.store(true, Ordering::SeqCst);
                 Ok(())
             })
@@ -211,6 +277,38 @@ mod tests {
             let value = run_serial(|| Ok(42)).expect("value");
             assert_eq!(value, 42);
         });
+    }
+
+    #[test]
+    fn async_queue_runs_from_the_main_thread_and_returns_native_errors() {
+        let _guard = test_lock();
+        struct RestoreMain;
+        impl Drop for RestoreMain {
+            fn drop(&mut self) {
+                crate::native::set_simulate_main_thread(false);
+            }
+        }
+        let _restore_main = RestoreMain;
+        crate::native::set_simulate_main_thread(true);
+
+        let refused = run_serial(|| Ok(())).expect_err("blocking call must refuse the UI thread");
+        assert!(matches!(refused, QonversionError::MainThread));
+
+        let value = block_on(run_serial_async(|| Ok(7))).expect("async call from the UI thread");
+        assert_eq!(value, 7);
+
+        let err = block_on(run_serial_async(|| {
+            Err::<(), _>(QonversionError::Native {
+                message: "simulated SDK failure".into(),
+            })
+        }))
+        .expect_err("worker error must propagate");
+        assert_eq!(
+            err,
+            QonversionError::Native {
+                message: "simulated SDK failure".into()
+            }
+        );
     }
 
     #[test]

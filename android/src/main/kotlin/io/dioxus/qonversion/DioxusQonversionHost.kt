@@ -16,6 +16,7 @@ import com.qonversion.android.sdk.dto.QLaunchMode
 import com.qonversion.android.sdk.dto.QRemoteConfig
 import com.qonversion.android.sdk.dto.QRemoteConfigurationSource
 import com.qonversion.android.sdk.dto.QUser
+import com.qonversion.android.sdk.dto.QonversionError
 import com.qonversion.android.sdk.dto.QonversionErrorCode
 import com.qonversion.android.sdk.dto.entitlements.QEntitlement
 import com.qonversion.android.sdk.dto.entitlements.QEntitlementSource
@@ -332,8 +333,8 @@ object DioxusQonversionHost {
                         complete(null)
                     }
 
-                    override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
-                        complete(qError.description ?: qError.toString())
+                    override fun onError(qError: QonversionError) {
+                        complete(errorMessage(qError))
                     }
                 })
             } catch (t: Throwable) {
@@ -368,8 +369,8 @@ object DioxusQonversionHost {
                         complete(encodeRemoteConfigSuccess(remoteConfig))
                     }
 
-                    override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
-                        complete(encodeEnvelopeError(qError.description ?: qError.toString()))
+                    override fun onError(qError: QonversionError) {
+                        complete(encodeEnvelopeError(errorMessage(qError)))
                     }
                 }
                 if (key == null) {
@@ -588,8 +589,8 @@ object DioxusQonversionHost {
                         complete(encodeEntitlementsSuccess(entitlements))
                     }
 
-                    override fun onError(qError: com.qonversion.android.sdk.dto.QonversionError) {
-                        complete(encodeEnvelopeError(qError.description ?: qError.toString()))
+                    override fun onError(qError: QonversionError) {
+                        complete(encodeEnvelopeError(errorMessage(qError)))
                     }
                 })
             } catch (t: Throwable) {
@@ -707,6 +708,12 @@ object DioxusQonversionHost {
             root.put("timed_out", true)
         }
         return root.toString()
+    }
+
+    /** `description` is generic; the HTTP status and backend message are in `additionalMessage`. */
+    private fun errorMessage(error: QonversionError): String {
+        val detail = error.additionalMessage.trim()
+        return if (detail.isEmpty()) error.description else "${error.description}: $detail"
     }
 
     private fun encodeEnvelopeError(message: String, timedOut: Boolean = false): String {

@@ -3,12 +3,17 @@
 use crate::config::InitConfig;
 use crate::error::QonversionError;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_os = "android")]
 mod android_plugin;
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(target_os = "ios")]
+mod ios_plugin;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod unsupported;
 
@@ -59,7 +64,20 @@ pub(crate) fn restore() -> Result<String, QonversionError> {
     sys::restore()
 }
 
+#[cfg(test)]
+static SIMULATE_MAIN_THREAD: AtomicBool = AtomicBool::new(false);
+
 /// True when the current thread is the Android main looper or iOS main thread.
 pub(crate) fn is_main_thread() -> bool {
+    #[cfg(test)]
+    if SIMULATE_MAIN_THREAD.load(Ordering::Relaxed) {
+        return true;
+    }
     sys::is_main_thread()
+}
+
+/// Force [`is_main_thread`] for tests that cannot run on a device UI thread.
+#[cfg(test)]
+pub(crate) fn set_simulate_main_thread(value: bool) {
+    SIMULATE_MAIN_THREAD.store(value, Ordering::Relaxed);
 }

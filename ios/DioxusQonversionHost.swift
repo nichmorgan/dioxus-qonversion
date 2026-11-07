@@ -2,29 +2,59 @@ import Foundation
 import Qonversion
 import NoCodes
 
-@_silgen_name("dioxus_qonversion_notify_screen_failed")
-func dioxus_qonversion_notify_screen_failed(_ storeUnavailable: Int32, _ message: UnsafePointer<CChar>?)
-
-@_silgen_name("dioxus_qonversion_notify_screen_event")
-func dioxus_qonversion_notify_screen_event(_ json: UnsafePointer<CChar>?)
+// Match the Rust `extern "C"` callbacks. `@objc` cannot express `@convention(c)`
+// parameters, so the boundary takes raw pointers and converts them once.
+private typealias ScreenFailedCallback = @convention(c) (Int32, UnsafePointer<CChar>?) -> Void
+private typealias ScreenEventCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
 
 /// Thin ObjC-visible host so Rust can call Qonversion + No-Codes via `objc`.
 ///
-/// Compile this file into your Dioxus iOS target and add the Qonversion iOS SDK
-/// (SPM: https://github.com/qonversion/qonversion-ios-sdk, minimum 6.13.0).
+/// Dioxus CLI 0.7+ builds this file from `ios/Package.swift` and embeds the
+/// framework. Without `dx`, add that local package (product `DioxusQonversionHost`).
+/// The package depends on the Qonversion iOS SDK 6.13.0 or later.
 @objc(DioxusQonversionHost)
 public class DioxusQonversionHost: NSObject {
-    private static let noCodesEventDelegate = NoCodesEventDelegate()
+    /// Retains the delegate. No-Codes holds its delegate weakly.
+    private static var noCodesEventDelegate: NoCodesEventDelegate?
 
     /// Initialize Qonversion (Subscription Management) and No-Codes with the same project key.
     ///
+    /// `screenFailed` and `screenEvent` are process-lifetime C function pointers.
+    /// SDK setup runs on the main thread.
+    ///
     /// - Returns: `nil` on success, or an error description string on failure.
-    @objc(initializeWithProjectKey:sandbox:)
-    public static func initialize(projectKey: String, sandbox: Bool) -> String? {
+    @objc(initializeWithProjectKey:sandbox:screenFailed:screenEvent:)
+    public static func initialize(
+        projectKey: String,
+        sandbox: Bool,
+        screenFailed: UnsafeRawPointer,
+        screenEvent: UnsafeRawPointer
+    ) -> String? {
+        let failed = unsafeBitCast(screenFailed, to: ScreenFailedCallback.self)
+        let event = unsafeBitCast(screenEvent, to: ScreenEventCallback.self)
+        if Thread.isMainThread {
+            return initializeOnMain(projectKey: projectKey, sandbox: sandbox, failed: failed, event: event)
+        }
+        var result: String?
+        DispatchQueue.main.sync {
+            result = initializeOnMain(projectKey: projectKey, sandbox: sandbox, failed: failed, event: event)
+        }
+        return result
+    }
+
+    private static func initializeOnMain(
+        projectKey: String,
+        sandbox: Bool,
+        failed: ScreenFailedCallback,
+        event: ScreenEventCallback
+    ) -> String? {
         let trimmed = projectKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return "project_key must not be empty"
         }
+
+        let delegate = NoCodesEventDelegate(failed: failed, event: event)
+        noCodesEventDelegate = delegate
 
         let qonversionConfig = Qonversion.Configuration(
             projectKey: trimmed,
@@ -33,15 +63,15 @@ public class DioxusQonversionHost: NSObject {
         qonversionConfig.setEnvironment(sandbox ? .sandbox : .production)
         Qonversion.initWithConfig(qonversionConfig)
 
-        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: noCodesEventDelegate)
+        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: delegate)
         NoCodes.initialize(with: noCodesConfig)
-        NoCodes.shared.set(delegate: noCodesEventDelegate)
+        NoCodes.shared.set(delegate: delegate)
         return nil
     }
 
     /// Present a No-Codes screen by context key (fire-and-present).
     ///
-    /// Hops to the main thread because `NoCodes.shared.showScreen` is `@MainActor`.
+    /// Schedules presentation on the main actor without blocking the caller.
     ///
     /// - Returns: `nil` on success, or an error description string on failure.
     @objc(showScreenWithContextKey:)
@@ -50,13 +80,8 @@ public class DioxusQonversionHost: NSObject {
         guard !trimmed.isEmpty else {
             return "context_key must not be empty"
         }
-        let present = {
+        Task { @MainActor in
             NoCodes.shared.showScreen(withContextKey: trimmed)
-        }
-        if Thread.isMainThread {
-            present()
-        } else {
-            DispatchQueue.main.async(execute: present)
         }
         return nil
     }
@@ -111,7 +136,7 @@ public class DioxusQonversionHost: NSObject {
         return awaitOnMain(timeoutMs: timeoutMs, timeoutValue: hostTimeoutSentinel as String?) { complete in
             Qonversion.shared().identify(trimmed) { _, error in
                 if let error {
-                    complete(error.localizedDescription)
+                    complete(errorMessage(error))
                 } else {
                     complete(nil)
                 }
@@ -141,7 +166,7 @@ public class DioxusQonversionHost: NSObject {
         ) { complete in
             let handler: (Qonversion.RemoteConfig?, Error?) -> Void = { config, error in
                 if let error {
-                    complete(encodeEnvelopeError(error.localizedDescription))
+                    complete(encodeEnvelopeError(errorMessage(error)))
                 } else if let config {
                     complete(encodeRemoteConfigSuccess(config))
                 } else {
@@ -165,7 +190,7 @@ public class DioxusQonversionHost: NSObject {
         entitlementsCall(timeoutMs: timeoutMs, label: "check entitlements") { complete in
             Qonversion.shared().checkEntitlements { entitlements, error in
                 if let error {
-                    complete(encodeEnvelopeError(error.localizedDescription))
+                    complete(encodeEnvelopeError(errorMessage(error)))
                 } else {
                     complete(encodeEntitlementsSuccess(entitlements))
                 }
@@ -181,7 +206,7 @@ public class DioxusQonversionHost: NSObject {
         entitlementsCall(timeoutMs: timeoutMs, label: "restore") { complete in
             Qonversion.shared().restore { entitlements, error in
                 if let error {
-                    complete(encodeEnvelopeError(error.localizedDescription))
+                    complete(encodeEnvelopeError(errorMessage(error)))
                 } else {
                     complete(encodeEntitlementsSuccess(entitlements))
                 }
@@ -242,13 +267,30 @@ public class DioxusQonversionHost: NSObject {
         } else {
             dict["payload"] = [:]
         }
-        dict["source"] = encodeSource(config.source)
+        // The Swift overlay types `source` as non-optional, but the ObjC mapper
+        // returns nil when the backend has no active configuration.
+        if let source = config.value(forKey: "source") as? Qonversion.RemoteConfigurationSource {
+            dict["source"] = encodeSource(source)
+        } else {
+            dict["source"] = NSNull()
+        }
         if let experiment = config.experiment {
             dict["experiment"] = encodeExperiment(experiment)
         } else {
             dict["experiment"] = NSNull()
         }
         return stringifyEnvelope(dict)
+    }
+
+    /// The SDK keeps the backend error code and reason in `NSDebugDescriptionErrorKey`, not in `localizedDescription`.
+    private static func errorMessage(_ error: Error) -> String {
+        let message = error.localizedDescription
+        guard let detail = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String,
+              !detail.isEmpty
+        else {
+            return message
+        }
+        return "\(message): \(detail)"
     }
 
     private static func encodeEnvelopeError(_ message: String, timedOut: Bool = false) -> String {
@@ -466,6 +508,14 @@ private func stringifyJson(_ dict: [String: Any]) -> String? {
 
 /// Forwards No-Codes load failures and purchase / restore / finish / custom-action events.
 private final class NoCodesEventDelegate: NoCodesDelegate {
+    private let failed: ScreenFailedCallback
+    private let event: ScreenEventCallback
+
+    init(failed: ScreenFailedCallback, event: ScreenEventCallback) {
+        self.failed = failed
+        self.event = event
+    }
+
     func noCodesFinishedExecuting(action: NoCodesAction) {
         notifyScreenEvent(kind: "action_finished", action: action, message: nil)
     }
@@ -486,9 +536,9 @@ private final class NoCodesEventDelegate: NoCodesDelegate {
     func noCodesFailedToLoadScreen(error: Error?) {
         let storeUnavailable = isStoreUnavailable(error)
         let message = error.map { String(describing: $0) } ?? "No-Codes screen failed to load"
-        message.withCString { cstr in
-            dioxus_qonversion_notify_screen_failed(storeUnavailable ? 1 : 0, cstr)
-        }
+        let callback = failed
+        // Rust copies the string before enqueueing. The pointer must not escape withCString.
+        message.withCString { callback(storeUnavailable ? 1 : 0, $0) }
         NoCodes.shared.close()
     }
 
@@ -507,9 +557,8 @@ private final class NoCodesEventDelegate: NoCodesDelegate {
         guard let string = stringifyJson(dict) else {
             return
         }
-        string.withCString { cstr in
-            dioxus_qonversion_notify_screen_event(cstr)
-        }
+        let callback = event
+        string.withCString { callback($0) }
     }
 
     private func actionTypeString(_ type: NoCodesActionType) -> String {

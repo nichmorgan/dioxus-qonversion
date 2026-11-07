@@ -12,6 +12,48 @@ This crate is **not affiliated** with Qonversion.
 
 Early — the public API is not stable yet. See the [roadmap](https://github.com/nichmorgan/dioxus-qonversion/issues/1).
 
+## Run the example
+
+The demo is `example/`. It needs the [Dioxus CLI](https://dioxuslabs.com/) 0.7.10 and a booted emulator or simulator.
+
+```sh
+cargo binstall dioxus-cli@0.7.10
+cd example
+cp .env.example .env
+```
+
+Set `QONVERSION_PROJECT_KEY` in `.env` to the client SDK project key, not an `sk_` secret. Leave `QONVERSION_REMOTE_CONFIG_CONTEXT_KEY` empty to fetch the default Remote Config. `QONVERSION_NO_CODE_CONTEXT_KEY` is the screen the No-Code button presents.
+
+Boot a device, then serve. Android `--device` is the serial from the first column of `adb devices -l` (such as `emulator-5554`), not the AVD name. Pass `--target x86_64-linux-android` for an x86_64 emulator.
+
+```sh
+dx serve --platform android --device emulator-5554 --target x86_64-linux-android
+```
+
+On a Mac, with a booted simulator:
+
+```sh
+dx serve --platform ios
+```
+
+The home screen has two buttons. **Remote Config** shows the payload fetched at launch. **No-Code** presents the screen.
+
+## Test
+
+`cargo test` at the repo root checks the library. It does not call Qonversion. The same tests on an iOS or Android target expect `HostMissing`, because only an app built by `dx` can reach the SDK.
+
+The live check needs a booted device, and no `dx serve` already using it. From `example/`:
+
+```sh
+cargo test -- --ignored --nocapture android
+```
+
+Use `ios` instead of `android` on a Mac. `remote_config` and `no_code` share one `dx` run. The Remote Config context key is pinned to `dioxus_integration_test`. The No-Codes key comes from the environment or `.env`. Each test prints one summary line.
+
+`cross test` does not run this check. It builds the host test for the phone, and the cases stay ignored unless `--ignored` is passed.
+
+On GitHub: Actions, Live SDK check, Run workflow. Fill in the project key and the No-Codes context key, or leave them blank to use the `test` environment secrets. A value you type is shown on that run's page. One run covers Android and iOS, and both ignored tests.
+
 ## Architecture
 
 ```text
@@ -52,16 +94,18 @@ Double-init returns a typed error. Desktop / web builds return `UnsupportedPlatf
 After init (and after your app session restore / sign-in), map a **stable** app user id into Qonversion so purchases attach to that user. Use your auth provider uid — not an ephemeral session token.
 
 ```rust
-use dioxus_qonversion::{identify, logout};
+use dioxus::prelude::spawn;
+use dioxus_qonversion::{identify_async, logout_async};
 
-// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
-identify(firebase_uid)?;
-
-// On sign-out:
-logout()?;
+spawn(async move {
+    identify_async(&firebase_uid).await?;
+    // On sign-out:
+    logout_async().await?;
+    Ok::<(), dioxus_qonversion::QonversionError>(())
+});
 ```
 
-`identify` / `logout`, Remote Config, `load_screen`, `check_entitlements`, and `restore` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Timing out returns `QonversionError::Timeout` and does **not** cancel native work — the worker is freed after the wait expires, so a later queued call may overlap still-running SDK work. Calling these from the UI thread returns `QonversionError::MainThread`. `show_screen` stays fire-and-present and is **not** on this queue.
+`identify` / `logout`, Remote Config, `load_screen`, `check_entitlements`, and `restore` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Await the `*_async` variants from Dioxus `spawn`. On iOS, `spawn` futures run on the UI thread, and the blocking variants return `QonversionError::MainThread` there — those are for a background thread. Timing out returns `QonversionError::Timeout` and does **not** cancel native work. The worker is freed after the native wait expires, so a later queued call may overlap still-running SDK work. `show_screen` stays fire-and-present and is **not** on this queue.
 
 If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library does not memoize Remote Config or entitlements; clear any app-side caches yourself after `identify` / `logout`. The native SDK also drops its **in-memory** Remote Config cache on those calls (identify cache-drop even with the same id needs iOS 6.14.0+ / Android 9.7.0+), so refetch `remote_config` afterwards if you still need the payload.
 
@@ -70,15 +114,19 @@ If identify fails or times out, anonymous paywalls can still work. **Fail-open v
 After init, fetch the JSON payload for any dashboard **context key**. Field names inside the payload stay app-owned — this crate does not interpret them.
 
 ```rust
-use dioxus_qonversion::{remote_config, remote_config_default};
+use dioxus::prelude::spawn;
+use dioxus_qonversion::{remote_config_async, remote_config_default_async};
 
-// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
-let config = remote_config("your_context_key")?;
-let payload = &config.payload;
-
-// Empty dashboard context key (SDK default overload):
-let default = remote_config_default()?;
+spawn(async {
+    let config = remote_config_async("your_context_key").await?;
+    let _payload = &config.payload;
+    // Empty dashboard context key (SDK default overload):
+    let _default = remote_config_default_async().await?;
+    Ok::<(), dioxus_qonversion::QonversionError>(())
+});
 ```
+
+The blocking `remote_config` / `remote_config_default` functions are the same calls for a background thread. They return `QonversionError::MainThread` on the UI thread.
 
 Same **serial SDK queue** and **8s** timeout as `identify` / `logout`. An empty payload map is success; SDK failures are `QonversionError::Native` or `Timeout`. `source` and `experiment` are present when the SDK assigned this payload from a remote config or A/B experiment.
 
@@ -101,18 +149,23 @@ let enabled = config
 Screens marked **preloadable** in the No-Codes Builder (Settings → General) are fetched automatically at SDK init — that path needs no crate API.
 
 ```rust
-use dioxus_qonversion::{load_screen, show_screen, QonversionError};
+use dioxus::prelude::spawn;
+use dioxus_qonversion::{load_screen_async, show_screen, QonversionError};
 
-// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
-match load_screen("your_context_key") {
-    Ok(_screen) => show_screen("your_context_key")?,
-    Err(QonversionError::ScreenNotFound) => { /* app-owned fallback — key has no published screen */ }
-    Err(QonversionError::Timeout { .. }) | Err(QonversionError::Native { .. }) => {
-        /* transient; retry or fallback */
+spawn(async {
+    match load_screen_async("your_context_key").await {
+        Ok(_screen) => show_screen("your_context_key")?,
+        Err(QonversionError::ScreenNotFound) => { /* app-owned fallback — key has no published screen */ }
+        Err(QonversionError::Timeout { .. }) | Err(QonversionError::Native { .. }) => {
+            /* transient; retry or fallback */
+        }
+        other => return other.map(|_| ()),
     }
-    other => other.map(|_| ())?,
-}
+    Ok(())
+});
 ```
+
+Blocking `load_screen` is the same call for a background thread.
 
 A successful load also returns official Builder defaults: `default_selected_product_id` and `default_variables` (custom variables and product slots). Same **serial SDK queue** and **8s** timeout as `identify` / `logout` / Remote Config.
 
@@ -121,18 +174,23 @@ A successful load also returns official Builder defaults: `default_selected_prod
 After init, read the current entitlement map. An empty map is success — the user has no entitlements. The app owns which dashboard id means “premium”.
 
 ```rust
-use dioxus_qonversion::{check_entitlements, restore};
+use dioxus::prelude::spawn;
+use dioxus_qonversion::{check_entitlements_async, restore_async};
 
-// Prefer calling from Dioxus `spawn` / a background thread (blocking wait).
-let entitlements = check_entitlements()?;
-let premium = entitlements
-    .get("your_entitlement_id")
-    .map(|e| e.is_active)
-    .unwrap_or(false);
+spawn(async {
+    let entitlements = check_entitlements_async().await?;
+    let _premium = entitlements
+        .get("your_entitlement_id")
+        .map(|e| e.is_active)
+        .unwrap_or(false);
 
-// After the user taps Restore (or after ActionFinished { Restore } from a No-Codes screen):
-let entitlements = restore()?;
+    // After the user taps Restore (or after ActionFinished { Restore } from a No-Codes screen):
+    let _entitlements = restore_async().await?;
+    Ok::<(), dioxus_qonversion::QonversionError>(())
+});
 ```
+
+Blocking `check_entitlements` / `restore` are the same calls for a background thread.
 
 `restore` maps to official `restore()`: it refreshes Store-linked entitlements and returns the same map shape. It does not create a purchase or charge the user. Re-run `check_entitlements` later if you need a fresh snapshot. Same **serial SDK queue** and **8s** timeout as `identify`.
 
@@ -141,19 +199,21 @@ let entitlements = restore()?;
 Compose Remote Config + entitlements in the **app**. Example field name `entitlement_id` is an example only — never a crate constant:
 
 ```rust
-use dioxus_qonversion::{check_entitlements, remote_config};
+use dioxus_qonversion::{check_entitlements_async, remote_config_async, QonversionError};
 
-let config = remote_config("your_context_key")?;
-let entitlement_id = config
-    .payload
-    .get("entitlement_id")
-    .and_then(|value| value.as_str())
-    .unwrap_or("premium");
-let entitlements = check_entitlements()?;
-let active = entitlements
-    .get(entitlement_id)
-    .map(|e| e.is_active)
-    .unwrap_or(false);
+async fn check_status() -> Result<bool, QonversionError> {
+    let config = remote_config_async("your_context_key").await?;
+    let entitlement_id = config
+        .payload
+        .get("entitlement_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("premium");
+    let entitlements = check_entitlements_async().await?;
+    Ok(entitlements
+        .get(entitlement_id)
+        .map(|e| e.is_active)
+        .unwrap_or(false))
+}
 ```
 
 Call this after launch, after `identify`, and after `ActionFinished { Purchase }` / `Restore`.
@@ -222,8 +282,7 @@ Context is taken from `ndk_context` (initialized by Dioxus / wry).
 
 ### iOS app deps
 
-1. Add the [Qonversion iOS SDK](https://github.com/qonversion/qonversion-ios-sdk) via Swift Package Manager (**≥ 6.13.0** for No-Codes).
-2. Compile [`ios/DioxusQonversionHost.swift`](ios/DioxusQonversionHost.swift) from this crate into your Dioxus iOS target (copy or path reference in Xcode / your `dx` mobile project).
+Build with **Dioxus CLI 0.7+** (`dx`). This crate registers [`ios/Package.swift`](ios/Package.swift), so the CLI compiles the Swift host and embeds it. The package targets iOS 15+ and depends on the Qonversion iOS SDK 6.13.0 or later (`Qonversion`, `QonversionSwift`, and `NoCodes`). Without `dx`, add the local `ios/` package in Xcode (product `DioxusQonversionHost`). dx 0.7.10 embeds only one Swift plugin framework, so an app that also uses another Swift plugin can ship without this host.
 
 ## App recipes
 

@@ -22,19 +22,21 @@ mod screen;
 
 pub use config::{Environment, InitConfig, LaunchMode};
 pub use entitlements::{
-    check_entitlements, restore, Entitlement, EntitlementRenewState, EntitlementSource,
+    check_entitlements, check_entitlements_async, restore, restore_async, Entitlement,
+    EntitlementRenewState, EntitlementSource,
 };
 pub use error::QonversionError;
-pub use identity::{identify, logout};
+pub use identity::{identify, identify_async, logout, logout_async};
 pub use init::{initialize, is_initialized};
 pub use load_screen::{
-    load_screen, LoadedScreen, ScreenVariable, ScreenVariableKind, ScreenVariableValue,
+    load_screen, load_screen_async, LoadedScreen, ScreenVariable, ScreenVariableKind,
+    ScreenVariableValue,
 };
 pub use queue::{sdk_timeout, set_sdk_timeout, DEFAULT_SDK_TIMEOUT};
 pub use remote_config::{
-    remote_config, remote_config_default, Experiment, ExperimentGroup, ExperimentGroupType,
-    RemoteConfig, RemoteConfigurationAssignmentType, RemoteConfigurationSource,
-    RemoteConfigurationSourceType,
+    remote_config, remote_config_async, remote_config_default, remote_config_default_async,
+    Experiment, ExperimentGroup, ExperimentGroupType, RemoteConfig,
+    RemoteConfigurationAssignmentType, RemoteConfigurationSource, RemoteConfigurationSourceType,
 };
 pub use screen::{
     clear_screen_event_handler, clear_screen_failed_handler, set_screen_event_handler,
@@ -44,11 +46,13 @@ pub use screen::{
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        check_entitlements, clear_screen_event_handler, clear_screen_failed_handler, identify,
-        initialize, is_initialized, load_screen, logout, remote_config, remote_config_default,
-        restore, sdk_timeout, set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout,
-        show_screen, Entitlement, EntitlementRenewState, EntitlementSource, Environment,
-        Experiment, ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode, LoadedScreen,
+        check_entitlements, check_entitlements_async, clear_screen_event_handler,
+        clear_screen_failed_handler, identify, identify_async, initialize, is_initialized,
+        load_screen, load_screen_async, logout, logout_async, remote_config, remote_config_async,
+        remote_config_default, remote_config_default_async, restore, restore_async, sdk_timeout,
+        set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout, show_screen,
+        Entitlement, EntitlementRenewState, EntitlementSource, Environment, Experiment,
+        ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode, LoadedScreen,
         QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
         RemoteConfigurationSource, RemoteConfigurationSourceType, ScreenActionKind, ScreenEvent,
         ScreenVariable, ScreenVariableKind, ScreenVariableValue, DEFAULT_SDK_TIMEOUT,
@@ -266,6 +270,23 @@ mod tests {
         let _guard = queue::test_lock();
         init::reset_initialized_for_test();
         let err = remote_config("paywall").expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn remote_config_async_requires_init_on_the_main_thread() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        struct RestoreMain;
+        impl Drop for RestoreMain {
+            fn drop(&mut self) {
+                native::set_simulate_main_thread(false);
+            }
+        }
+        let _restore = RestoreMain;
+        native::set_simulate_main_thread(true);
+        let err = queue::block_on(remote_config_async("paywall"))
+            .expect_err("async call must require initialize");
         assert_eq!(err, QonversionError::NotInitialized);
     }
 
