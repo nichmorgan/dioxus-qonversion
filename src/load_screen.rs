@@ -68,8 +68,9 @@ impl LoadedScreen {
 /// Fetch a No-Codes screen by context key without presenting it.
 ///
 /// Optional — [`crate::show_screen`] works without this. Runs on the serial
-/// SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`]. Blocking wait: call from
-/// Dioxus `spawn` / a background thread; avoid the UI thread.
+/// SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`]. Blocking wait: call from a
+/// background thread. The UI thread returns [`QonversionError::MainThread`].
+/// On iOS, await [`load_screen_async`] from Dioxus `spawn`.
 ///
 /// Official `loadScreen` does not flush pending user properties, so targeting
 /// can differ slightly from [`crate::show_screen`].
@@ -80,10 +81,19 @@ impl LoadedScreen {
 pub fn load_screen(context_key: &str) -> Result<LoadedScreen, QonversionError> {
     let context_key = crate::helpers::require_non_empty("context_key", context_key)?.to_string();
     init::require_initialized()?;
-    queue::run_serial(move || {
-        let envelope = native::load_screen(&context_key)?;
-        parse_envelope(&envelope, &context_key)
-    })
+    queue::run_serial(move || load_on_worker(context_key))
+}
+
+/// [`load_screen`] for Dioxus `spawn`. See [`crate::remote_config_async`].
+pub async fn load_screen_async(context_key: &str) -> Result<LoadedScreen, QonversionError> {
+    let context_key = crate::helpers::require_non_empty("context_key", context_key)?.to_string();
+    init::require_initialized()?;
+    queue::run_serial_async(move || load_on_worker(context_key)).await
+}
+
+fn load_on_worker(context_key: String) -> Result<LoadedScreen, QonversionError> {
+    let envelope = native::load_screen(&context_key)?;
+    parse_envelope(&envelope, &context_key)
 }
 
 /// Parse the native host JSON envelope into [`LoadedScreen`].

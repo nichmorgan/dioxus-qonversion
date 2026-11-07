@@ -54,12 +54,18 @@ pub enum EntitlementSource {
 ///
 /// Maps to official `checkEntitlements()`. An empty map is success (no
 /// entitlements). Runs on the serial SDK queue with
-/// [`crate::DEFAULT_SDK_TIMEOUT`]. Blocking wait: call from Dioxus `spawn` /
-/// a background thread; the UI thread returns [`QonversionError::MainThread`].
+/// [`crate::DEFAULT_SDK_TIMEOUT`]. Blocking wait: call from a background
+/// thread. The UI thread returns [`QonversionError::MainThread`]. On iOS,
+/// await [`check_entitlements_async`] from Dioxus `spawn`.
 ///
 /// The app owns which entitlement id means “premium”.
 pub fn check_entitlements() -> Result<HashMap<String, Entitlement>, QonversionError> {
     entitlements_from(native::check_entitlements)
+}
+
+/// [`check_entitlements`] for Dioxus `spawn`. See [`crate::remote_config_async`].
+pub async fn check_entitlements_async() -> Result<HashMap<String, Entitlement>, QonversionError> {
+    entitlements_from_async(native::check_entitlements).await
 }
 
 /// Restore Store-linked purchases and return the refreshed entitlement map.
@@ -70,11 +76,23 @@ pub fn restore() -> Result<HashMap<String, Entitlement>, QonversionError> {
     entitlements_from(native::restore)
 }
 
+/// [`restore`] for Dioxus `spawn`. See [`crate::remote_config_async`].
+pub async fn restore_async() -> Result<HashMap<String, Entitlement>, QonversionError> {
+    entitlements_from_async(native::restore).await
+}
+
 fn entitlements_from(
     native: impl FnOnce() -> Result<String, QonversionError> + Send + 'static,
 ) -> Result<HashMap<String, Entitlement>, QonversionError> {
     init::require_initialized()?;
     queue::run_serial(|| parse_envelope(&native()?))
+}
+
+async fn entitlements_from_async(
+    native: impl FnOnce() -> Result<String, QonversionError> + Send + 'static,
+) -> Result<HashMap<String, Entitlement>, QonversionError> {
+    init::require_initialized()?;
+    queue::run_serial_async(|| parse_envelope(&native()?)).await
 }
 
 /// Parse the native host JSON envelope into an entitlement map.

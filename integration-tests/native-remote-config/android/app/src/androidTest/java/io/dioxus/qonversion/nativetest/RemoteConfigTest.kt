@@ -12,7 +12,7 @@ import org.junit.runner.RunWith
 class RemoteConfigTest {
     @Test(timeout = 60000)
     fun realRemoteConfig() {
-        assumeTrue("Native SDK test disabled: use run.py android --run",
+        assumeTrue("Native SDK test disabled: pass -PrunNativeRemoteConfig=true",
             InstrumentationRegistry.getArguments().getString("runNativeRemoteConfig") == "true")
         // Instrumentation/JUnit worker is not the main looper. The production
         // Kotlin host posts SDK initialization and requests to the main looper.

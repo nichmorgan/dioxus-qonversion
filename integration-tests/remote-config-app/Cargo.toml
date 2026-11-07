@@ -1,0 +1,10 @@
+[package]
+name = "remote-config-app"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+dioxus = { version = "0.7.10", features = ["desktop"] }
+dioxus-qonversion = { path = "../.." }
+serde_json = "1"

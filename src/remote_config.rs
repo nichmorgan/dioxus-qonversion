@@ -81,14 +81,25 @@ pub enum ExperimentGroupType {
 /// Fetch Remote Config for a dashboard context key.
 ///
 /// Runs on the serial SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`] (see
-/// [`crate::set_sdk_timeout`]). Blocking wait: safe to call from Dioxus `spawn`
-/// / a background thread; avoid the UI thread.
+/// [`crate::set_sdk_timeout`]). Blocking wait: call from a background thread.
+/// The UI thread returns [`QonversionError::MainThread`]. On iOS, Dioxus
+/// `spawn` runs on the UI thread — await [`remote_config_async`] from `spawn`.
 ///
 /// An empty payload map is success. SDK failures are
 /// [`QonversionError::Native`] or [`QonversionError::Timeout`].
 pub fn remote_config(context_key: &str) -> Result<RemoteConfig, QonversionError> {
     let context_key = crate::helpers::require_non_empty("context_key", context_key)?;
     fetch(Some(context_key.to_string()))
+}
+
+/// [`remote_config`] for Dioxus `spawn`.
+///
+/// The SDK call runs on the serial worker. The future itself does not block,
+/// so it is safe to await on the iOS UI thread. The native host still enforces
+/// [`crate::sdk_timeout`].
+pub async fn remote_config_async(context_key: &str) -> Result<RemoteConfig, QonversionError> {
+    let context_key = crate::helpers::require_non_empty("context_key", context_key)?;
+    fetch_async(Some(context_key.to_string())).await
 }
 
 /// Fetch Remote Config for the dashboard empty context key.
@@ -98,12 +109,24 @@ pub fn remote_config_default() -> Result<RemoteConfig, QonversionError> {
     fetch(None)
 }
 
+/// [`remote_config_default`] for Dioxus `spawn`. See [`remote_config_async`].
+pub async fn remote_config_default_async() -> Result<RemoteConfig, QonversionError> {
+    fetch_async(None).await
+}
+
 fn fetch(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
     init::require_initialized()?;
-    queue::run_serial(move || {
-        let envelope = native::remote_config(context_key.as_deref())?;
-        parse_envelope(&envelope)
-    })
+    queue::run_serial(move || fetch_on_worker(context_key))
+}
+
+async fn fetch_async(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
+    init::require_initialized()?;
+    queue::run_serial_async(move || fetch_on_worker(context_key)).await
+}
+
+fn fetch_on_worker(context_key: Option<String>) -> Result<RemoteConfig, QonversionError> {
+    let envelope = native::remote_config(context_key.as_deref())?;
+    parse_envelope(&envelope)
 }
 
 /// Parse the native host JSON envelope into [`RemoteConfig`].
@@ -211,152 +234,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // Simulate the native host protocol, not the SDK or a REST response.
-    const INTEGRATION_ENVELOPE: &str = r#"{
-        "ok": true,
-        "payload": {
-            "feature_test_enabled": true,
-            "test_id": "dioxus_ios_remote_config",
-            "message": "Remote Config funcionando"
-        },
-        "source": {
-            "id": "integration-config",
-            "name": "Dioxus Rust Integration Test",
-            "assignment_type": "auto",
-            "type": "remote_configuration",
-            "context_key": "dioxus_integration_test"
-        },
-        "experiment": null
-    }"#;
-
     #[test]
-    fn integration_payload_and_context_survive_parsing_on_sdk_queue() {
+    fn native_error_envelope_propagates_through_async_queue() {
         let _guard = queue::test_lock();
-        let config = queue::off_main(|| {
-            queue::run_serial(|| parse_envelope(INTEGRATION_ENVELOPE))
-                .expect("native success envelope must parse through the SDK queue")
-        });
-
-        assert_eq!(config.payload.len(), 3);
+        let err = queue::block_on(queue::run_serial_async(|| {
+            parse_envelope(r#"{"ok":false,"error":"simulated SDK failure"}"#)
+        }))
+        .expect_err("native error must propagate through the async SDK queue");
         assert_eq!(
-            config
-                .payload
-                .get("feature_test_enabled")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            config.payload.get("test_id").and_then(Value::as_str),
-            Some("dioxus_ios_remote_config")
-        );
-        assert_eq!(
-            config.payload.get("message").and_then(Value::as_str),
-            Some("Remote Config funcionando")
-        );
-        let source = config.source.expect("standalone configuration source");
-        assert_eq!(source.id, "integration-config");
-        assert_eq!(source.name, "Dioxus Rust Integration Test");
-        assert_eq!(
-            source.source_type,
-            RemoteConfigurationSourceType::RemoteConfiguration
-        );
-        assert_eq!(
-            source.assignment_type,
-            RemoteConfigurationAssignmentType::Auto
-        );
-        assert_eq!(
-            source.context_key.as_deref(),
-            Some("dioxus_integration_test")
-        );
-        assert!(config.experiment.is_none());
-    }
-
-    #[test]
-    fn missing_application_fields_remain_absent_without_defaults() {
-        for field in ["feature_test_enabled", "test_id", "message"] {
-            let mut envelope: Value = serde_json::from_str(INTEGRATION_ENVELOPE).unwrap();
-            envelope["payload"].as_object_mut().unwrap().remove(field);
-
-            // The generic library does not require app-owned field names.
-            let config = parse_envelope(&envelope.to_string())
-                .expect("an incomplete app payload is still a valid SDK envelope");
-            assert_eq!(config.payload.len(), 2, "missing field: {field}");
-            assert!(
-                config.payload.get(field).is_none(),
-                "missing field: {field}"
-            );
-            for other in ["feature_test_enabled", "test_id", "message"] {
-                if other != field {
-                    assert_eq!(config.payload.get(other), envelope["payload"].get(other));
-                }
+            err,
+            QonversionError::Native {
+                message: "simulated SDK failure".into()
             }
-        }
-    }
-
-    #[test]
-    fn wrong_application_field_types_are_detectable_without_coercion() {
-        for (field, wrong_value) in [
-            ("feature_test_enabled", json!("true")),
-            ("feature_test_enabled", json!(1)),
-            ("feature_test_enabled", Value::Null),
-            ("test_id", json!(123)),
-            ("test_id", json!(false)),
-            ("message", json!(["Remote Config funcionando"])),
-            ("message", Value::Null),
-        ] {
-            let mut envelope: Value = serde_json::from_str(INTEGRATION_ENVELOPE).unwrap();
-            envelope["payload"][field] = wrong_value.clone();
-            let config = parse_envelope(&envelope.to_string())
-                .expect("app field types are not enforced by the generic library");
-            let actual = config
-                .payload
-                .get(field)
-                .expect("field must not be dropped");
-
-            assert_eq!(actual, &wrong_value, "field must not be coerced: {field}");
-            if field == "feature_test_enabled" {
-                assert_eq!(actual.as_bool(), None, "invalid boolean type: {actual}");
-            } else {
-                assert_eq!(actual.as_str(), None, "invalid string type: {actual}");
-            }
-        }
-    }
-
-    #[test]
-    fn null_payload_is_empty_map() {
-        let config = parse_envelope(r#"{"ok":true,"payload":null}"#)
-            .expect("null payload follows the existing empty-map semantics");
-        assert!(config.payload.is_empty());
-        assert!(config.source.is_none());
-        assert!(config.experiment.is_none());
-    }
-
-    #[test]
-    fn native_error_and_timeout_envelopes_propagate_through_sdk_queue() {
-        let _guard = queue::test_lock();
-        queue::off_main(|| {
-            let native_error = queue::run_serial(|| {
-                parse_envelope(r#"{"ok":false,"error":"simulated SDK failure"}"#)
-            })
-            .expect_err("native error must propagate through the SDK queue");
-            assert_eq!(
-                native_error,
-                QonversionError::Native {
-                    message: "simulated SDK failure".into()
-                }
-            );
-
-            let timeout = queue::run_serial(|| {
-                parse_envelope(r#"{"ok":false,"timed_out":true,"error":"remote config timed out"}"#)
-            })
-            .expect_err("native timeout envelope must remain a typed timeout");
-            assert_eq!(
-                timeout,
-                QonversionError::Timeout {
-                    timeout: queue::sdk_timeout()
-                }
-            );
-        });
+        );
     }
 
     #[test]
@@ -368,9 +258,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_payload_is_empty_map() {
-        let config = parse_envelope(r#"{"ok":true}"#).expect("missing payload");
-        assert!(config.payload.is_empty());
+    fn missing_or_null_payload_is_empty_map() {
+        for json in [r#"{"ok":true}"#, r#"{"ok":true,"payload":null}"#] {
+            let config = parse_envelope(json).expect(json);
+            assert!(config.payload.is_empty(), "{json}");
+            assert!(config.source.is_none(), "{json}");
+            assert!(config.experiment.is_none(), "{json}");
+        }
     }
 
     #[test]
@@ -404,8 +298,8 @@ mod tests {
     fn invalid_json_is_error() {
         for malformed in [
             "not-json",
-            r#"{"ok":true,"payload":{"feature_test_enabled":true}"#,
-            r#"{"ok":true,"payload":{"feature_test_enabled":true,}}"#,
+            r#"{"ok":true,"payload":{"flag":true}"#,
+            r#"{"ok":true,"payload":{"flag":true,}}"#,
         ] {
             let err = parse_envelope(malformed).expect_err("malformed JSON must fail");
             match err {

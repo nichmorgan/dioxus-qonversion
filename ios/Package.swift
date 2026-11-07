@@ -3,7 +3,8 @@
 import PackageDescription
 
 // Keep the product name in sync with src/native/ios_plugin.rs.
-// Dioxus CLI 0.7+ builds this product as a dynamic framework.
+// Declared static so an app can link this package directly. Dioxus CLI 0.7+
+// rewrites `type: .static` to `type: .dynamic` when it embeds the framework.
 let package = Package(
     name: "DioxusQonversionHost",
     platforms: [
@@ -17,7 +18,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/qonversion/qonversion-ios-sdk.git", exact: "6.13.0"),
+        .package(url: "https://github.com/qonversion/qonversion-ios-sdk.git", from: "6.13.0"),
     ],
     targets: [
         .target(

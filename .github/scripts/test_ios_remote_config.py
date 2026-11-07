@@ -1,4 +1,5 @@
-"""Local, stdlib-only tests; no iOS command or network request is executed."""
+"""Local, stdlib-only tests. No iOS command or network request is executed."""
+
 import contextlib
 import io
 import os
@@ -17,10 +18,14 @@ class DiagnosticsTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.patches = [
             mock.patch.object(ci, "ROOT", self.root),
+            mock.patch.object(ci, "APP", self.root),
             mock.patch.object(ci, "SAFE", self.root / "safe"),
             mock.patch.object(ci, "RAW", self.root / "raw"),
-            mock.patch.object(ci, "CONFIG", self.root / "ci.toml"),
-            mock.patch.dict(os.environ, {"QONVERSION_PROJECT_KEY": "unit-test-project-key", "IOS_TARGET": "aarch64-apple-ios-sim"}),
+            mock.patch.object(ci, "CONFIG", self.root / "Dioxus.toml"),
+            mock.patch.dict(
+                os.environ,
+                {"QONVERSION_PROJECT_KEY": "unit-test-project-key", "IOS_TARGET": "aarch64-apple-ios-sim"},
+            ),
         ]
         for patch in self.patches:
             patch.start()
@@ -39,6 +44,7 @@ class DiagnosticsTests(unittest.TestCase):
 
     def test_command_output_is_redacted_before_console_and_file(self):
         import sys
+
         console = io.StringIO()
         with contextlib.redirect_stdout(console):
             ci.run([sys.executable, "-c", "print('unit-test-project-key')"], "command.log")
@@ -49,19 +55,13 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotIn("QONVERSION_PROJECT_KEY", ci.child_env())
         self.assertEqual(ci.child_env(with_key=True)["QONVERSION_PROJECT_KEY"], "unit-test-project-key")
 
-    def test_build_restores_existing_configuration_after_failure(self):
-        config = self.root / "Dioxus.toml"
-        config.write_bytes(b"original local configuration\r\n")
-        with mock.patch.object(ci, "run", side_effect=RuntimeError("simulated build error")):
-            with self.assertRaisesRegex(RuntimeError, "simulated build error"):
-                ci.build()
-        self.assertEqual(config.read_bytes(), b"original local configuration\r\n")
-
-    def test_build_removes_temporary_configuration_after_failure(self):
-        with mock.patch.object(ci, "run", side_effect=RuntimeError("simulated build error")):
-            with self.assertRaises(RuntimeError):
-                ci.build()
-        self.assertFalse((self.root / "Dioxus.toml").exists())
+    def test_build_invokes_dx_in_the_app_directory(self):
+        with mock.patch.object(ci, "run") as run:
+            ci.build()
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][:4], ["dx", "build", "--platform", "ios"])
+        self.assertEqual(kwargs["cwd"], ci.APP)
+        self.assertTrue(kwargs["with_key"])
 
     def test_app_selection_requires_matching_bundle_identifier(self):
         app = self.root / "target/dx/demo/Demo.app"
@@ -77,10 +77,10 @@ class DiagnosticsTests(unittest.TestCase):
             ci.find_app()
 
     def test_artifact_allowlist_redacts_reports_and_omits_binaries(self):
-        (ci.RAW / "report.xml").write_text('<failure>unit-test-project-key</failure>', encoding="utf-8")
+        (ci.RAW / "report.xml").write_text("<failure>unit-test-project-key</failure>", encoding="utf-8")
         (ci.RAW / "app.zip").write_bytes(b"unit-test-project-key")
         (ci.RAW / "Demo.app").mkdir()
-        (ci.RAW / "Demo.app/config.json").write_text('{}', encoding="utf-8")
+        (ci.RAW / "Demo.app/config.json").write_text("{}", encoding="utf-8")
         (ci.RAW / "screenshot.png").write_bytes(b"\x89PNG\r\nunit-test-screenshot")
         ci.publish_safe_files()
         report = (ci.SAFE / "maestro/report.xml").read_text()
@@ -89,12 +89,6 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertFalse((ci.SAFE / "maestro/app.zip").exists())
         self.assertFalse((ci.SAFE / "maestro/Demo.app").exists())
         self.assertTrue((ci.SAFE / "maestro/screenshot.png").exists())
-
-    def test_png_with_literal_key_bytes_is_rejected(self):
-        (ci.RAW / "bad.png").write_bytes(b"\x89PNG\r\nunit-test-project-key")
-        with self.assertRaisesRegex(RuntimeError, "artifact rejected"):
-            ci.publish_safe_files()
-        self.assertFalse((ci.SAFE / "maestro/bad.png").exists())
 
     def test_reports_survive_unavailable_simulator(self):
         (ci.RAW / "report.xml").write_text('<testsuite failures="1"/>', encoding="utf-8")

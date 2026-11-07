@@ -2,81 +2,59 @@ import Foundation
 import Qonversion
 import NoCodes
 
-// Match Rust extern "C" signatures. These pointers are registered at runtime,
-// so this independently linked framework has no unresolved Rust symbol imports.
+// Match the Rust `extern "C"` callbacks. `@objc` cannot express `@convention(c)`
+// parameters, so the boundary takes raw pointers and converts them once.
 private typealias ScreenFailedCallback = @convention(c) (Int32, UnsafePointer<CChar>?) -> Void
 private typealias ScreenEventCallback = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias ScreenCallbacks = (failed: ScreenFailedCallback, event: ScreenEventCallback)
 
 /// Thin ObjC-visible host so Rust can call Qonversion + No-Codes via `objc`.
 ///
-/// Compile this file into your Dioxus iOS target and add the Qonversion iOS SDK
-/// (SPM: https://github.com/qonversion/qonversion-ios-sdk, minimum 6.13.0).
+/// Dioxus CLI 0.7+ builds this file from `ios/Package.swift` and embeds the
+/// framework. Without `dx`, add that local package (product `DioxusQonversionHost`).
+/// The package depends on the Qonversion iOS SDK 6.13.0 or later.
 @objc(DioxusQonversionHost)
 public class DioxusQonversionHost: NSObject {
-    private static let noCodesEventDelegate = NoCodesEventDelegate()
-    private static let callbackLock = NSLock()
-    private static var screenCallbacks: ScreenCallbacks?
-
-    /// Register both process-lifetime Rust callbacks before initializing either SDK.
-    /// Function pointers are copied, not Objective-C blocks or borrowed closures.
-    @objc(registerScreenCallbacksWithFailed:event:)
-    public static func registerScreenCallbacks(failed: UnsafeRawPointer?, event: UnsafeRawPointer?) -> String? {
-        guard let failed, let event else {
-            return "both Rust screen callbacks must be registered"
-        }
-        let callbacks: ScreenCallbacks = (
-            failed: unsafeBitCast(failed, to: ScreenFailedCallback.self),
-            event: unsafeBitCast(event, to: ScreenEventCallback.self)
-        )
-        callbackLock.lock()
-        screenCallbacks = callbacks
-        callbackLock.unlock()
-        return nil
-    }
-
-    private static var hasScreenCallbacks: Bool {
-        callbackLock.lock()
-        defer { callbackLock.unlock() }
-        return screenCallbacks != nil
-    }
-
-    private static func registeredScreenCallbacks() -> ScreenCallbacks {
-        callbackLock.lock()
-        defer { callbackLock.unlock() }
-        guard let callbacks = screenCallbacks else {
-            // Initialization rejects this state. Never silently drop an event
-            // if a host is used outside the supported initialization sequence.
-            preconditionFailure("Rust screen callbacks were not registered before SDK initialization")
-        }
-        return callbacks
-    }
-
-    fileprivate static func notifyScreenFailed(storeUnavailable: Bool, message: String) {
-        let callback = registeredScreenCallbacks().failed
-        // Invoke after releasing the lock. Rust copies the string synchronously
-        // before enqueueing work; the pointer must not escape withCString.
-        message.withCString { callback(storeUnavailable ? 1 : 0, $0) }
-    }
-
-    fileprivate static func notifyScreenEvent(json: String) {
-        let callback = registeredScreenCallbacks().event
-        json.withCString { callback($0) }
-    }
+    /// Retains the delegate. No-Codes holds its delegate weakly.
+    private static var noCodesEventDelegate: NoCodesEventDelegate?
 
     /// Initialize Qonversion (Subscription Management) and No-Codes with the same project key.
     ///
+    /// `screenFailed` and `screenEvent` are process-lifetime C function pointers.
+    /// SDK setup runs on the main thread.
+    ///
     /// - Returns: `nil` on success, or an error description string on failure.
-    @objc(initializeWithProjectKey:sandbox:)
-    public static func initialize(projectKey: String, sandbox: Bool) -> String? {
+    @objc(initializeWithProjectKey:sandbox:screenFailed:screenEvent:)
+    public static func initialize(
+        projectKey: String,
+        sandbox: Bool,
+        screenFailed: UnsafeRawPointer,
+        screenEvent: UnsafeRawPointer
+    ) -> String? {
+        let failed = unsafeBitCast(screenFailed, to: ScreenFailedCallback.self)
+        let event = unsafeBitCast(screenEvent, to: ScreenEventCallback.self)
+        if Thread.isMainThread {
+            return initializeOnMain(projectKey: projectKey, sandbox: sandbox, failed: failed, event: event)
+        }
+        var result: String?
+        DispatchQueue.main.sync {
+            result = initializeOnMain(projectKey: projectKey, sandbox: sandbox, failed: failed, event: event)
+        }
+        return result
+    }
+
+    private static func initializeOnMain(
+        projectKey: String,
+        sandbox: Bool,
+        failed: ScreenFailedCallback,
+        event: ScreenEventCallback
+    ) -> String? {
         let trimmed = projectKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return "project_key must not be empty"
         }
 
-        guard hasScreenCallbacks else {
-            return "Rust screen callbacks must be registered before initialize"
-        }
+        let delegate = NoCodesEventDelegate(failed: failed, event: event)
+        noCodesEventDelegate = delegate
 
         let qonversionConfig = Qonversion.Configuration(
             projectKey: trimmed,
@@ -85,9 +63,9 @@ public class DioxusQonversionHost: NSObject {
         qonversionConfig.setEnvironment(sandbox ? .sandbox : .production)
         Qonversion.initWithConfig(qonversionConfig)
 
-        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: noCodesEventDelegate)
+        let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: delegate)
         NoCodes.initialize(with: noCodesConfig)
-        NoCodes.shared.set(delegate: noCodesEventDelegate)
+        NoCodes.shared.set(delegate: delegate)
         return nil
     }
 
@@ -289,7 +267,13 @@ public class DioxusQonversionHost: NSObject {
         } else {
             dict["payload"] = [:]
         }
-        dict["source"] = encodeSource(config.source)
+        // The Swift overlay types `source` as non-optional, but the ObjC mapper
+        // returns nil when the backend has no active configuration.
+        if let source = config.value(forKey: "source") as? Qonversion.RemoteConfigurationSource {
+            dict["source"] = encodeSource(source)
+        } else {
+            dict["source"] = NSNull()
+        }
         if let experiment = config.experiment {
             dict["experiment"] = encodeExperiment(experiment)
         } else {
@@ -513,6 +497,14 @@ private func stringifyJson(_ dict: [String: Any]) -> String? {
 
 /// Forwards No-Codes load failures and purchase / restore / finish / custom-action events.
 private final class NoCodesEventDelegate: NoCodesDelegate {
+    private let failed: ScreenFailedCallback
+    private let event: ScreenEventCallback
+
+    init(failed: ScreenFailedCallback, event: ScreenEventCallback) {
+        self.failed = failed
+        self.event = event
+    }
+
     func noCodesFinishedExecuting(action: NoCodesAction) {
         notifyScreenEvent(kind: "action_finished", action: action, message: nil)
     }
@@ -533,7 +525,9 @@ private final class NoCodesEventDelegate: NoCodesDelegate {
     func noCodesFailedToLoadScreen(error: Error?) {
         let storeUnavailable = isStoreUnavailable(error)
         let message = error.map { String(describing: $0) } ?? "No-Codes screen failed to load"
-        DioxusQonversionHost.notifyScreenFailed(storeUnavailable: storeUnavailable, message: message)
+        let callback = failed
+        // Rust copies the string before enqueueing. The pointer must not escape withCString.
+        message.withCString { callback(storeUnavailable ? 1 : 0, $0) }
         NoCodes.shared.close()
     }
 
@@ -552,7 +546,8 @@ private final class NoCodesEventDelegate: NoCodesDelegate {
         guard let string = stringifyJson(dict) else {
             return
         }
-        DioxusQonversionHost.notifyScreenEvent(json: string)
+        let callback = event
+        string.withCString { callback($0) }
     }
 
     private func actionTypeString(_ type: NoCodesActionType) -> String {

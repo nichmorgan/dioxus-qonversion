@@ -1,6 +1,4 @@
 /target/
-/ios/NativeRemoteConfig.xcodeproj/
-/ios/DerivedData/
 /android/.gradle/
 /android/build/
 /android/local.properties

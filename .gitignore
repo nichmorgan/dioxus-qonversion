@@ -1,5 +1,6 @@
 /target
 Cargo.lock
+ios/.build
 android/.gradle/
 android/build/
 android/local.properties

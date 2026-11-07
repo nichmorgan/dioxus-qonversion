@@ -1,14 +1,15 @@
-name: Native Remote Config
+name: Remote Config end to end
 
 on:
+  workflow_dispatch:
   push:
-    branches: [test/qonversion-remote-config-ios]
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-remote-config-${{ github.ref }}
+  group: remote-config-e2e-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -21,79 +22,91 @@ env:
 
 jobs:
   ios:
-    name: Native Rust SDK - iOS
-    if: github.event_name == 'push' && github.ref == 'refs/heads/test/qonversion-remote-config-ios'
-    runs-on: macos-15
+    name: iOS dx and Maestro
     environment: test
-    timeout-minutes: 90
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Prepare iOS tools
+
+      - name: Select simulator architecture
+        id: architecture
         run: |
           set -euo pipefail
-          xcodebuild -version
-          command -v xcodegen >/dev/null || brew install xcodegen
           case "$(uname -m)" in
             arm64) target=aarch64-apple-ios-sim ;;
             x86_64) target=x86_64-apple-ios ;;
-            *) echo "Unsupported Simulator architecture" >&2; exit 1 ;;
+            *) echo "Unsupported macOS runner architecture" >&2; exit 1 ;;
           esac
-          rustup target add "$target"
-          native_root=$(mktemp -d "$RUNNER_TEMP/qonversion-native.XXXXXX")
-          printf 'RUST_TARGET=%s\nNATIVE_ROOT=%s\n' "$target" "$native_root" >> "$GITHUB_ENV"
-      - name: Build Rust static library
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "IOS_TARGET=$target" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate test configuration and Xcode
         env:
           QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 .github/scripts/ios_remote_config.py preflight
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ steps.architecture.outputs.target }}
+
+      - name: Install Dioxus CLI 0.7.10
+        run: cargo install dioxus-cli --version 0.7.10 --locked
+
+      - name: Install Maestro CLI
         run: |
           set -euo pipefail
-          : "${QONVERSION_PROJECT_KEY:?SDK Project Key is required in Environment test}"
-          CARGO_TARGET_DIR="$NATIVE_ROOT/target" cargo rustc --manifest-path "$TEST_ROOT/Cargo.toml" \
-            --lib --features native-sdk-test --target "$RUST_TARGET" -- --print native-static-libs \
-            > "$NATIVE_ROOT/cargo.log" 2>&1
-      - name: Link and run XCTest
-        run: |
-          set -euo pipefail
-          library="$NATIVE_ROOT/target/$RUST_TARGET/debug/libnative_remote_config_test.a"
-          test -s "$library" || { echo "Missing Rust static archive" >&2; exit 1; }
-          xcrun ar -t "$library" >/dev/null
-          xcrun lipo "$library" -verify_arch "$(uname -m)"
-          native_libs=$(python3 -B "$TEST_ROOT/run.py" rust-native-libs "$NATIVE_ROOT/cargo.log")
-          (cd "$TEST_ROOT/ios" && RUST_LIBRARY="$library" xcodegen generate) > "$NATIVE_ROOT/xcodegen.log" 2>&1
-          device=$(xcrun simctl create NativeRemoteConfig com.apple.CoreSimulator.SimDeviceType.iPhone-16 com.apple.CoreSimulator.SimRuntime.iOS-18-5)
-          trap 'xcrun simctl delete "$device" >/dev/null 2>&1 || true' EXIT
-          xcrun simctl boot "$device"
-          xcrun simctl bootstatus "$device" -b
-          destination="platform=iOS Simulator,id=$device"
-          derived="$NATIVE_ROOT/DerivedData"
-          xcodebuild -project "$TEST_ROOT/ios/NativeRemoteConfig.xcodeproj" -scheme NativeRemoteConfig \
-            -destination "$destination" -derivedDataPath "$derived" build-for-testing \
-            "RUST_NATIVE_LIBS=$native_libs" > "$NATIVE_ROOT/xcode-build.log" 2>&1
-          set -- "$derived"/Build/Products/*.xctestrun
-          test "$#" -eq 1 && test -f "$1" || { echo "Expected exactly one XCTest plan" >&2; exit 1; }
-          python3 -B "$TEST_ROOT/run.py" prepare-ios "$1"
-          xcodebuild test-without-building -xctestrun "$1" -destination "$destination" \
-            -parallel-testing-enabled NO \
-            -only-testing:NativeRemoteConfigTests/RemoteConfigTests/testRealRemoteConfig \
-            -resultBundlePath "$NATIVE_ROOT/result.xcresult" > "$NATIVE_ROOT/xctest.log" 2>&1
-          xcrun xcresulttool get test-results summary --path "$NATIVE_ROOT/result.xcresult" \
-            > "$NATIVE_ROOT/summary.json" 2> "$NATIVE_ROOT/xcresulttool.log"
-          python3 -B "$TEST_ROOT/run.py" verify-ios "$NATIVE_ROOT/summary.json"
-      - name: Show sanitized failure diagnostics
-        if: failure() && env.NATIVE_ROOT != ''
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Build iOS test app and Swift host
         env:
           QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 -B "$TEST_ROOT/run.py" logs "$NATIVE_ROOT"
+        run: python3 .github/scripts/ios_remote_config.py build
+
+      - name: Inspect app and host framework
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 .github/scripts/ios_remote_config.py inspect
+
+      - name: Boot iOS Simulator
+        uses: futureware-tech/simulator-action@v6
+        with:
+          wait_for_boot: true
+
+      - name: Install simulator app
+        run: python3 .github/scripts/ios_remote_config.py install
+
+      - name: Run Maestro
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 .github/scripts/ios_remote_config.py test
+
+      - name: Collect sanitized diagnostics
+        if: always()
+        env:
+          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+        run: python3 .github/scripts/ios_remote_config.py collect
+
+      - name: Upload sanitized iOS results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-config-ios-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/remote-config-e2e-safe/
+          if-no-files-found: warn
+          retention-days: 7
 
   android:
-    name: Native Rust SDK - Android
-    if: github.event_name == 'push' && github.ref == 'refs/heads/test/qonversion-remote-config-ios'
-    runs-on: ubuntu-24.04
+    name: Android JUnit
     environment: test
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7

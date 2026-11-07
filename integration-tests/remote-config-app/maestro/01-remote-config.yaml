@@ -1,0 +1,30 @@
+appId: com.example.qonversion.remoteconfig
+name: iOS native Remote Config
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: '(?s).*(SDK initialized|Initialization failed|Initialization:).*'
+    timeout: 60000
+- assertVisible: '.*SDK initialized\. Ready to query\..*'
+- assertNotVisible: '(?s).*(Native host missing|HostMissing|Initialization failed|Initialization:).*'
+- assertVisible: '.*Context key: dioxus_integration_test.*'
+- tapOn: "Fetch Remote Config"
+- extendedWaitUntil:
+    visible: '.*Elapsed:.*'
+    timeout: 30000
+- scrollUntilVisible:
+    element: '(?s).*(Payload valid:|Payload invalid:|Query failed:).*'
+    direction: DOWN
+    timeout: 15000
+- assertVisible: '.*Payload valid: the three fields have the expected types and values\..*'
+- assertNotVisible: '(?s).*(Native host missing|HostMissing|Timeout:|Query failed:|Payload invalid:).*'
+- takeScreenshot: payload-validation
+- scrollUntilVisible:
+    element: "Received JSON"
+    direction: UP
+    timeout: 15000
+- assertVisible: '(?s).*"feature_test_enabled"\s*:\s*true.*'
+- assertVisible: '(?s).*"test_id"\s*:\s*"dioxus_ios_remote_config".*'
+- assertVisible: '(?s).*"message"\s*:\s*"Remote Config funcionando".*'
+- takeScreenshot: received-json

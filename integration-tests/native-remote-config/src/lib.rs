@@ -1,4 +1,4 @@
-//! Real SDK integration contract. Native entry points require explicit opt-in.
+//! Real SDK integration contract for the Android instrumentation test.
 #![cfg_attr(not(feature = "native-sdk-test"), allow(dead_code))]
 
 use dioxus_qonversion::{Environment, InitConfig, LaunchMode, RemoteConfig};
@@ -97,5 +97,3 @@ fn boundary(work: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
 
 #[cfg(all(feature = "native-sdk-test", target_os = "android"))]
 mod android;
-#[cfg(all(feature = "native-sdk-test", target_os = "ios"))]
-mod ios;

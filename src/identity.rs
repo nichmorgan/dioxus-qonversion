@@ -11,8 +11,9 @@ use crate::queue;
 /// stable id). Prefer a **stable** id — do not pass ephemeral session tokens.
 ///
 /// Runs on the serial SDK queue with [`crate::DEFAULT_SDK_TIMEOUT`] (see
-/// [`crate::set_sdk_timeout`]). Blocking wait: safe to call from Dioxus `spawn`
-/// / a background thread. The UI thread returns [`QonversionError::MainThread`].
+/// [`crate::set_sdk_timeout`]). Blocking wait: call from a background thread.
+/// The UI thread returns [`QonversionError::MainThread`]. On iOS, Dioxus
+/// `spawn` runs on the UI thread — await [`identify_async`] from `spawn`.
 ///
 /// The native SDK drops its in-memory Remote Config cache on identify (iOS
 /// 6.14.0+ / Android 9.7.0+ even when the id is unchanged). Refetch
@@ -24,10 +25,18 @@ pub fn identify(user_id: &str) -> Result<(), QonversionError> {
     queue::run_serial(move || native::identify(&user_id))
 }
 
+/// [`identify`] for Dioxus `spawn`. See [`crate::remote_config_async`].
+pub async fn identify_async(user_id: &str) -> Result<(), QonversionError> {
+    let user_id = crate::helpers::require_non_empty("user_id", user_id)?;
+    init::require_initialized()?;
+    let user_id = user_id.to_string();
+    queue::run_serial_async(move || native::identify(&user_id)).await
+}
+
 /// Clear the Qonversion user session (call on app logout).
 ///
-/// Runs on the same serial SDK queue as [`identify`]. Blocking wait — prefer
-/// `spawn` / a background thread.
+/// Runs on the same serial SDK queue as [`identify`]. Blocking wait — call
+/// from a background thread, or await [`logout_async`] from Dioxus `spawn`.
 ///
 /// This library does not memoize Remote Config or entitlements for the app;
 /// clear any app-side caches yourself after logout. The native SDK also drops
@@ -36,4 +45,10 @@ pub fn identify(user_id: &str) -> Result<(), QonversionError> {
 pub fn logout() -> Result<(), QonversionError> {
     init::require_initialized()?;
     queue::run_serial(|| native::logout())
+}
+
+/// [`logout`] for Dioxus `spawn`. See [`crate::remote_config_async`].
+pub async fn logout_async() -> Result<(), QonversionError> {
+    init::require_initialized()?;
+    queue::run_serial_async(|| native::logout()).await
 }

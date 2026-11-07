@@ -1,5 +1,8 @@
 //! Present a Qonversion No-Codes screen and forward No-Codes events.
 
+// Desktop builds have no native caller for the C callbacks. iOS and Android do.
+#![cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
+
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
@@ -251,12 +254,11 @@ pub(crate) fn screen_failed_error(store_unavailable: bool, message: String) -> Q
     }
 }
 
-/// Called from the iOS Swift host (and tests) when a No-Codes screen fails to load.
+/// C callback passed to the iOS host during initialize.
 ///
 /// `store_unavailable != 0` maps to [`QonversionError::StoreUnavailable`];
 /// otherwise the UTF-8 `message` is forwarded as [`QonversionError::Native`].
-#[no_mangle]
-pub extern "C" fn dioxus_qonversion_notify_screen_failed(
+pub(crate) extern "C" fn dioxus_qonversion_notify_screen_failed(
     store_unavailable: i32,
     message: *const c_char,
 ) {
@@ -270,9 +272,8 @@ pub extern "C" fn dioxus_qonversion_notify_screen_failed(
     hop_screen_failed(screen_failed_error(store_unavailable != 0, message));
 }
 
-/// Called from the iOS Swift host (and tests) with a JSON screen-event envelope.
-#[no_mangle]
-pub extern "C" fn dioxus_qonversion_notify_screen_event(json: *const c_char) {
+/// C callback passed to the iOS host during initialize.
+pub(crate) extern "C" fn dioxus_qonversion_notify_screen_event(json: *const c_char) {
     if json.is_null() {
         return;
     }
@@ -286,9 +287,12 @@ pub extern "C" fn dioxus_qonversion_notify_screen_event(json: *const c_char) {
 mod tests {
     use super::*;
     use crate::queue;
+    use std::ffi::CString;
+    use std::os::raw::c_char;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
+    use std::thread;
     use std::time::Duration;
 
     fn restore_handler() -> impl Drop {
@@ -343,21 +347,25 @@ mod tests {
     fn c_abi_maps_store_unavailable_and_native() {
         let _guard = queue::test_lock();
         let _restore = restore_handler();
+        let caller = thread::current().id();
         let (tx, rx) = mpsc::channel();
         set_screen_failed_handler(move |err| {
-            let _ = tx.send(err);
+            let _ = tx.send((err, thread::current().id()));
         });
 
-        dioxus_qonversion_notify_screen_failed(1, std::ptr::null());
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(1)).expect("store"),
-            QonversionError::StoreUnavailable
-        );
+        let failed: extern "C" fn(i32, *const c_char) = dioxus_qonversion_notify_screen_failed;
+        failed(1, std::ptr::null());
+        let (error, failed_thread) = rx.recv_timeout(Duration::from_secs(1)).expect("store");
+        assert_eq!(error, QonversionError::StoreUnavailable);
+        assert_ne!(failed_thread, caller);
 
-        let msg = std::ffi::CString::new("backend down").unwrap();
-        dioxus_qonversion_notify_screen_failed(0, msg.as_ptr());
+        {
+            let msg = CString::new("backend down").unwrap();
+            failed(0, msg.as_ptr());
+        }
+        let (error, _) = rx.recv_timeout(Duration::from_secs(1)).expect("native");
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(1)).expect("native"),
+            error,
             QonversionError::Native {
                 message: "backend down".into()
             }
@@ -478,71 +486,28 @@ mod tests {
     }
 
     #[test]
-    fn registered_c_function_pointers_copy_strings_and_deliver_off_caller_thread() {
-        let _guard = queue::test_lock();
-        let _restore = restore_handler();
-        let caller = thread::current().id();
-        let (failed_tx, failed_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
-        set_screen_failed_handler(move |error| {
-            let _ = failed_tx.send((error, thread::current().id()));
-        });
-        set_screen_event_handler(move |event| {
-            let _ = event_tx.send((event, thread::current().id()));
-        });
-
-        // These are the exact C ABI pointer types registered with the iOS host.
-        let failed: extern "C" fn(i32, *const c_char) = dioxus_qonversion_notify_screen_failed;
-        let event: extern "C" fn(*const c_char) = dioxus_qonversion_notify_screen_event;
-        {
-            let message = std::ffi::CString::new("native callback failure").unwrap();
-            let json =
-                std::ffi::CString::new(r#"{"kind":"custom_action","value":"ação de teste"}"#)
-                    .unwrap();
-            failed(0, message.as_ptr());
-            event(json.as_ptr());
-        } // Native string storage is gone before the handlers are awaited.
-
-        let (error, failed_thread) = failed_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("failure callback");
-        assert_eq!(
-            error,
-            QonversionError::Native {
-                message: "native callback failure".into()
-            }
-        );
-        assert_ne!(failed_thread, caller);
-        let (event, event_thread) = event_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("event callback");
-        assert_eq!(
-            event,
-            ScreenEvent::CustomAction {
-                value: "ação de teste".into()
-            }
-        );
-        assert_ne!(event_thread, caller);
-    }
-
-    #[test]
     fn c_abi_dispatches_screen_event() {
         let _guard = queue::test_lock();
         let _restore = restore_handler();
+        let caller = thread::current().id();
         let (tx, rx) = mpsc::channel();
         set_screen_event_handler(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.send((event, thread::current().id()));
         });
 
-        let json =
-            std::ffi::CString::new(r#"{"kind":"action_finished","action":"purchase"}"#).unwrap();
-        dioxus_qonversion_notify_screen_event(json.as_ptr());
+        let notify: extern "C" fn(*const c_char) = dioxus_qonversion_notify_screen_event;
+        {
+            let json = CString::new(r#"{"kind":"custom_action","value":"café menu"}"#).unwrap();
+            notify(json.as_ptr());
+        }
+        let (event, event_thread) = rx.recv_timeout(Duration::from_secs(1)).expect("event");
         assert_eq!(
-            rx.recv_timeout(Duration::from_secs(1)).expect("event"),
-            ScreenEvent::ActionFinished {
-                kind: ScreenActionKind::Purchase
+            event,
+            ScreenEvent::CustomAction {
+                value: "café menu".into()
             }
         );
+        assert_ne!(event_thread, caller);
     }
 
     #[test]
