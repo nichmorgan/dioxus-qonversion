@@ -1,7 +1,16 @@
-name: Remote Config end to end
+name: Live SDK check
 
 on:
   workflow_dispatch:
+    inputs:
+      qonversion_project_key:
+        description: Client SDK project key, not the sk_ secret. Empty uses the test environment secret.
+        required: false
+        type: string
+      qonversion_no_code_context_key:
+        description: No-Codes context key. Empty uses the test environment secret.
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -37,8 +46,8 @@ jobs:
             os: macos-15
             target: aarch64-apple-ios-sim
     env:
-      QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-      QONVERSION_NO_CODE_CONTEXT_KEY: ${{ secrets.QONVERSION_NO_CODE_CONTEXT_KEY }}
+      QONVERSION_PROJECT_KEY: ${{ inputs.qonversion_project_key || secrets.QONVERSION_PROJECT_KEY }}
+      QONVERSION_NO_CODE_CONTEXT_KEY: ${{ inputs.qonversion_no_code_context_key || secrets.QONVERSION_NO_CODE_CONTEXT_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:

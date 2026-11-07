@@ -52,6 +52,8 @@ Use `ios` instead of `android` on a Mac. `remote_config` and `no_code` share one
 
 `cross test` does not run this check. It builds the host test for the phone, and the cases stay ignored unless `--ignored` is passed.
 
+On GitHub: Actions, Live SDK check, Run workflow. Fill in the project key and the No-Codes context key, or leave them blank to use the `test` environment secrets. A value you type is shown on that run's page. One run covers Android and iOS, and both ignored tests.
+
 ## Architecture
 
 ```text
