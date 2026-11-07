@@ -1,6 +1,0 @@
-flows:
-  - "01-remote-config.yaml"
-executionOrder:
-  continueOnFailure: false
-  flowsOrder:
-    - 01-remote-config

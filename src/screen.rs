@@ -1,9 +1,12 @@
 //! Present a Qonversion No-Codes screen and forward No-Codes events.
 
-// Desktop builds have no native caller for the C callbacks. iOS and Android do.
+// Desktop has no native caller for the dispatch helpers. The C callbacks are
+// iOS-only; Android registers JNI methods that call `hop_*` directly.
 #![cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 
+#[cfg(target_os = "ios")]
 use std::ffi::CStr;
+#[cfg(target_os = "ios")]
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
@@ -258,6 +261,7 @@ pub(crate) fn screen_failed_error(store_unavailable: bool, message: String) -> Q
 ///
 /// `store_unavailable != 0` maps to [`QonversionError::StoreUnavailable`];
 /// otherwise the UTF-8 `message` is forwarded as [`QonversionError::Native`].
+#[cfg(target_os = "ios")]
 pub(crate) extern "C" fn dioxus_qonversion_notify_screen_failed(
     store_unavailable: i32,
     message: *const c_char,
@@ -273,6 +277,7 @@ pub(crate) extern "C" fn dioxus_qonversion_notify_screen_failed(
 }
 
 /// C callback passed to the iOS host during initialize.
+#[cfg(target_os = "ios")]
 pub(crate) extern "C" fn dioxus_qonversion_notify_screen_event(json: *const c_char) {
     if json.is_null() {
         return;
@@ -287,13 +292,8 @@ pub(crate) extern "C" fn dioxus_qonversion_notify_screen_event(json: *const c_ch
 mod tests {
     use super::*;
     use crate::queue;
-    use std::ffi::CString;
-    use std::os::raw::c_char;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
-    use std::thread;
-    use std::time::Duration;
 
     fn restore_handler() -> impl Drop {
         struct Restore;
@@ -341,35 +341,6 @@ mod tests {
         clear_screen_failed_handler();
         dispatch_screen_failed(QonversionError::StoreUnavailable);
         assert_eq!(hits.load(Ordering::SeqCst), 11);
-    }
-
-    #[test]
-    fn c_abi_maps_store_unavailable_and_native() {
-        let _guard = queue::test_lock();
-        let _restore = restore_handler();
-        let caller = thread::current().id();
-        let (tx, rx) = mpsc::channel();
-        set_screen_failed_handler(move |err| {
-            let _ = tx.send((err, thread::current().id()));
-        });
-
-        let failed: extern "C" fn(i32, *const c_char) = dioxus_qonversion_notify_screen_failed;
-        failed(1, std::ptr::null());
-        let (error, failed_thread) = rx.recv_timeout(Duration::from_secs(1)).expect("store");
-        assert_eq!(error, QonversionError::StoreUnavailable);
-        assert_ne!(failed_thread, caller);
-
-        {
-            let msg = CString::new("backend down").unwrap();
-            failed(0, msg.as_ptr());
-        }
-        let (error, _) = rx.recv_timeout(Duration::from_secs(1)).expect("native");
-        assert_eq!(
-            error,
-            QonversionError::Native {
-                message: "backend down".into()
-            }
-        );
     }
 
     #[test]
@@ -485,43 +456,84 @@ mod tests {
         assert!(parse_event_envelope("[]").is_err());
     }
 
-    #[test]
-    fn c_abi_dispatches_screen_event() {
-        let _guard = queue::test_lock();
-        let _restore = restore_handler();
-        let caller = thread::current().id();
-        let (tx, rx) = mpsc::channel();
-        set_screen_event_handler(move |event| {
-            let _ = tx.send((event, thread::current().id()));
-        });
+    #[cfg(target_os = "ios")]
+    mod c_abi {
+        use super::super::*;
+        use super::restore_handler;
+        use crate::queue;
+        use std::ffi::CString;
+        use std::os::raw::c_char;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
 
-        let notify: extern "C" fn(*const c_char) = dioxus_qonversion_notify_screen_event;
-        {
-            let json = CString::new(r#"{"kind":"custom_action","value":"café menu"}"#).unwrap();
-            notify(json.as_ptr());
-        }
-        let (event, event_thread) = rx.recv_timeout(Duration::from_secs(1)).expect("event");
-        assert_eq!(
-            event,
-            ScreenEvent::CustomAction {
-                value: "café menu".into()
+        #[test]
+        fn maps_store_unavailable_and_native() {
+            let _guard = queue::test_lock();
+            let _restore = restore_handler();
+            let caller = thread::current().id();
+            let (tx, rx) = mpsc::channel();
+            set_screen_failed_handler(move |err| {
+                let _ = tx.send((err, thread::current().id()));
+            });
+
+            let failed: extern "C" fn(i32, *const c_char) = dioxus_qonversion_notify_screen_failed;
+            failed(1, std::ptr::null());
+            let (error, failed_thread) = rx.recv_timeout(Duration::from_secs(1)).expect("store");
+            assert_eq!(error, QonversionError::StoreUnavailable);
+            assert_ne!(failed_thread, caller);
+
+            {
+                let msg = CString::new("backend down").unwrap();
+                failed(0, msg.as_ptr());
             }
-        );
-        assert_ne!(event_thread, caller);
-    }
+            let (error, _) = rx.recv_timeout(Duration::from_secs(1)).expect("native");
+            assert_eq!(
+                error,
+                QonversionError::Native {
+                    message: "backend down".into()
+                }
+            );
+        }
 
-    #[test]
-    fn c_abi_malformed_event_fires_failed_handler() {
-        let _guard = queue::test_lock();
-        let _restore = restore_handler();
-        let (tx, rx) = mpsc::channel();
-        set_screen_failed_handler(move |err| {
-            let _ = tx.send(err);
-        });
+        #[test]
+        fn dispatches_screen_event() {
+            let _guard = queue::test_lock();
+            let _restore = restore_handler();
+            let caller = thread::current().id();
+            let (tx, rx) = mpsc::channel();
+            set_screen_event_handler(move |event| {
+                let _ = tx.send((event, thread::current().id()));
+            });
 
-        let json = std::ffi::CString::new("not-json").unwrap();
-        dioxus_qonversion_notify_screen_event(json.as_ptr());
-        let err = rx.recv_timeout(Duration::from_secs(1)).expect("failed");
-        assert!(matches!(err, QonversionError::Native { .. }));
+            let notify: extern "C" fn(*const c_char) = dioxus_qonversion_notify_screen_event;
+            {
+                let json = CString::new(r#"{"kind":"custom_action","value":"café menu"}"#).unwrap();
+                notify(json.as_ptr());
+            }
+            let (event, event_thread) = rx.recv_timeout(Duration::from_secs(1)).expect("event");
+            assert_eq!(
+                event,
+                ScreenEvent::CustomAction {
+                    value: "café menu".into()
+                }
+            );
+            assert_ne!(event_thread, caller);
+        }
+
+        #[test]
+        fn malformed_event_fires_failed_handler() {
+            let _guard = queue::test_lock();
+            let _restore = restore_handler();
+            let (tx, rx) = mpsc::channel();
+            set_screen_failed_handler(move |err| {
+                let _ = tx.send(err);
+            });
+
+            let json = CString::new("not-json").unwrap();
+            dioxus_qonversion_notify_screen_event(json.as_ptr());
+            let err = rx.recv_timeout(Duration::from_secs(1)).expect("failed");
+            assert!(matches!(err, QonversionError::Native { .. }));
+        }
     }
 }

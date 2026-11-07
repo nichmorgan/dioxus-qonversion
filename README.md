@@ -12,6 +12,46 @@ This crate is **not affiliated** with Qonversion.
 
 Early — the public API is not stable yet. See the [roadmap](https://github.com/nichmorgan/dioxus-qonversion/issues/1).
 
+## Run the example
+
+The demo is `example/`. It needs the [Dioxus CLI](https://dioxuslabs.com/) 0.7.10 and a booted emulator or simulator.
+
+```sh
+cargo binstall dioxus-cli@0.7.10
+cd example
+cp .env.example .env
+```
+
+Set `QONVERSION_PROJECT_KEY` in `.env` to the client SDK project key, not an `sk_` secret. Leave `QONVERSION_REMOTE_CONFIG_CONTEXT_KEY` empty to fetch the default Remote Config. `QONVERSION_NO_CODE_CONTEXT_KEY` is the screen the No-Code button presents.
+
+Boot a device, then serve. Android `--device` is the serial from the first column of `adb devices -l` (such as `emulator-5554`), not the AVD name. Pass `--target x86_64-linux-android` for an x86_64 emulator.
+
+```sh
+dx serve --platform android --device emulator-5554 --target x86_64-linux-android
+```
+
+On a Mac, with a booted simulator:
+
+```sh
+dx serve --platform ios
+```
+
+The home screen has two buttons. **Remote Config** shows the payload fetched at launch. **No-Code** presents the screen.
+
+## Test
+
+`cargo test` at the repo root checks the library. It does not call Qonversion. The same tests on an iOS or Android target expect `HostMissing`, because only an app built by `dx` can reach the SDK.
+
+The live check needs a booted device, and no `dx serve` already using it. From `example/`:
+
+```sh
+cargo test -- --ignored --nocapture android
+```
+
+Use `ios` instead of `android` on a Mac. `remote_config` and `no_code` share one `dx` run. The Remote Config context key is pinned to `dioxus_integration_test`. The No-Codes key comes from the environment or `.env`. Each test prints one summary line.
+
+`cross test` does not run this check. It builds the host test for the phone, and the cases stay ignored unless `--ignored` is passed.
+
 ## Architecture
 
 ```text

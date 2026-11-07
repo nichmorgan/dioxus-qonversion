@@ -18,149 +18,66 @@ concurrency:
 
 defaults:
   run:
-    shell: bash
-
-env:
-  TEST_ROOT: integration-tests/native-remote-config
-  CARGO_BUILD_JOBS: "1"
+    working-directory: example
 
 jobs:
-  ios:
-    name: iOS dx and Maestro
+  e2e:
+    name: ${{ matrix.case }}
     environment: test
-    runs-on: macos-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Select simulator architecture
-        id: architecture
-        run: |
-          set -euo pipefail
-          case "$(uname -m)" in
-            arm64) target=aarch64-apple-ios-sim ;;
-            x86_64) target=x86_64-apple-ios ;;
-            *) echo "Unsupported macOS runner architecture" >&2; exit 1 ;;
-          esac
-          echo "target=$target" >> "$GITHUB_OUTPUT"
-          echo "IOS_TARGET=$target" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Validate test configuration and Xcode
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py preflight
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ steps.architecture.outputs.target }}
-
-      - name: Install Dioxus CLI 0.7.10
-        run: cargo install dioxus-cli --version 0.7.10 --locked
-
-      - name: Install Maestro CLI
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://get.maestro.mobile.dev" | bash
-          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
-
-      - name: Build iOS test app and Swift host
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py build
-
-      - name: Inspect app and host framework
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py inspect
-
-      - name: Boot iOS Simulator
-        uses: futureware-tech/simulator-action@v6
-        with:
-          wait_for_boot: true
-
-      - name: Install simulator app
-        run: python3 .github/scripts/ios_remote_config.py install
-
-      - name: Run Maestro
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py test
-
-      - name: Collect sanitized diagnostics
-        if: always()
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 .github/scripts/ios_remote_config.py collect
-
-      - name: Upload sanitized iOS results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: remote-config-ios-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/remote-config-e2e-safe/
-          if-no-files-found: warn
-          retention-days: 7
-
-  android:
-    name: Android JUnit
-    environment: test
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: android
+            os: ubuntu-24.04
+            target: x86_64-linux-android
+          - case: ios
+            os: macos-15
+            target: aarch64-apple-ios-sim
+    env:
+      QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
+      QONVERSION_NO_CODE_CONTEXT_KEY: ${{ secrets.QONVERSION_NO_CODE_CONTEXT_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: example
+          key: ${{ matrix.case }}
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Dioxus CLI
+        run: cargo binstall -y dioxus-cli@0.7.10
+
+      - name: Install Java
+        if: matrix.case == 'android'
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.6"
-          cache-disabled: true
-          dependency-graph: disabled
-          add-job-summary: never
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-linux-android
-      - name: Prepare Android tools and KVM
-        run: |
-          set -euo pipefail
-          sdkmanager 'ndk;29.0.14206865' 'platforms;android-34' 'build-tools;34.0.0'
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
-          native_root=$(mktemp -d "$RUNNER_TEMP/qonversion-native.XXXXXX")
-          echo "NATIVE_ROOT=$native_root" >> "$GITHUB_ENV"
-          test -c /dev/kvm
-          sudo chmod 666 /dev/kvm
-      - name: Build Rust JNI library
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: |
-          set -euo pipefail
-          : "${QONVERSION_PROJECT_KEY:?SDK Project Key is required in Environment test}"
-          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"
-          CARGO_TARGET_DIR="$NATIVE_ROOT/target" cargo build --manifest-path "$TEST_ROOT/Cargo.toml" \
-            --lib --features native-sdk-test --target x86_64-linux-android > "$NATIVE_ROOT/cargo.log" 2>&1
-          install -D -m 600 "$NATIVE_ROOT/target/x86_64-linux-android/debug/libnative_remote_config_test.so" \
-            "$NATIVE_ROOT/jniLibs/x86_64/libnative_remote_config_test.so"
-      - name: Validate Gradle configuration and assemble instrumentation
-        run: |
-          set -euo pipefail
-          export QONVERSION_TEST_RAW_DIR="$NATIVE_ROOT" GRADLE_USER_HOME="$NATIVE_ROOT/gradle-home"
-          options=(-p "$TEST_ROOT/android" --no-daemon --console=plain --max-workers=1
-                   --project-cache-dir "$NATIVE_ROOT/gradle-cache" -PrunNativeRemoteConfig=true)
-          gradle "${options[@]}" help > "$NATIVE_ROOT/gradle-config.log" 2>&1
-          gradle "${options[@]}" :app:assembleDebug :app:assembleDebugAndroidTest > "$NATIVE_ROOT/gradle-build.log" 2>&1
-      - name: Boot emulator and run JUnit
+
+      # The host build of the example app for `cargo test` links WebKitGTK.
+      - name: Install WebKitGTK
+        if: matrix.case == 'android'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev
+
+      - name: Enable KVM
+        if: matrix.case == 'android'
+        run: test -c /dev/kvm && sudo chmod 666 /dev/kvm
+
+      - name: Live test on Android
+        if: matrix.case == 'android'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -169,15 +86,16 @@ jobs:
           emulator-boot-timeout: 300
           disable-linux-hw-accel: false
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader
-          script: >-
-            test "$(adb -s "$ANDROID_SERIAL" get-state)" = device &&
-            QONVERSION_TEST_RAW_DIR="$NATIVE_ROOT" GRADLE_USER_HOME="$NATIVE_ROOT/gradle-home"
-            gradle -p "$TEST_ROOT/android" --no-daemon --console=plain --max-workers=1
-            --project-cache-dir "$NATIVE_ROOT/gradle-cache"
-            :app:connectedDebugAndroidTest -PrunNativeRemoteConfig=true > "$NATIVE_ROOT/gradle.log" 2>&1 &&
-            python3 -B "$TEST_ROOT/run.py" verify-android "$NATIVE_ROOT/gradle-build/app/outputs/androidTest-results/connected"
-      - name: Show sanitized failure diagnostics
-        if: failure() && env.NATIVE_ROOT != ''
-        env:
-          QONVERSION_PROJECT_KEY: ${{ secrets.QONVERSION_PROJECT_KEY }}
-        run: python3 -B "$TEST_ROOT/run.py" logs "$NATIVE_ROOT"
+          working-directory: example
+          script: cargo test -- --ignored --nocapture android
+
+      - name: Boot iOS Simulator
+        if: matrix.case == 'ios'
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -E -o "[0-9A-F-]{36}")
+          xcrun simctl boot "$DEVICE" || true
+          xcrun simctl bootstatus "$DEVICE" -b
+
+      - name: Live test on iOS
+        if: matrix.case == 'ios'
+        run: cargo test -- --ignored --nocapture ios

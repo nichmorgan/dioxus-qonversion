@@ -1,8 +1,0 @@
-[application]
-name = "remote-config-app"
-
-[bundle]
-identifier = "com.example.qonversion.remoteconfig"
-
-[ios]
-deployment_target = "15.0"

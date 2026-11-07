@@ -136,7 +136,7 @@ public class DioxusQonversionHost: NSObject {
         return awaitOnMain(timeoutMs: timeoutMs, timeoutValue: hostTimeoutSentinel as String?) { complete in
             Qonversion.shared().identify(trimmed) { _, error in
                 if let error {
-                    complete(error.localizedDescription)
+                    complete(errorMessage(error))
                 } else {
                     complete(nil)
                 }
@@ -166,7 +166,7 @@ public class DioxusQonversionHost: NSObject {
         ) { complete in
             let handler: (Qonversion.RemoteConfig?, Error?) -> Void = { config, error in
                 if let error {
-                    complete(encodeEnvelopeError(error.localizedDescription))
+                    complete(encodeEnvelopeError(errorMessage(error)))
                 } else if let config {
                     complete(encodeRemoteConfigSuccess(config))
                 } else {
@@ -190,7 +190,7 @@ public class DioxusQonversionHost: NSObject {
         entitlementsCall(timeoutMs: timeoutMs, label: "check entitlements") { complete in
             Qonversion.shared().checkEntitlements { entitlements, error in
                 if let error {
-                    complete(encodeEnvelopeError(error.localizedDescription))
+                    complete(encodeEnvelopeError(errorMessage(error)))
                 } else {
                     complete(encodeEntitlementsSuccess(entitlements))
                 }
@@ -206,7 +206,7 @@ public class DioxusQonversionHost: NSObject {
         entitlementsCall(timeoutMs: timeoutMs, label: "restore") { complete in
             Qonversion.shared().restore { entitlements, error in
                 if let error {
-                    complete(encodeEnvelopeError(error.localizedDescription))
+                    complete(encodeEnvelopeError(errorMessage(error)))
                 } else {
                     complete(encodeEntitlementsSuccess(entitlements))
                 }
@@ -280,6 +280,17 @@ public class DioxusQonversionHost: NSObject {
             dict["experiment"] = NSNull()
         }
         return stringifyEnvelope(dict)
+    }
+
+    /// The SDK keeps the backend error code and reason in `NSDebugDescriptionErrorKey`, not in `localizedDescription`.
+    private static func errorMessage(_ error: Error) -> String {
+        let message = error.localizedDescription
+        guard let detail = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String,
+              !detail.isEmpty
+        else {
+            return message
+        }
+        return "\(message): \(detail)"
     }
 
     private static func encodeEnvelopeError(_ message: String, timedOut: Bool = false) -> String {

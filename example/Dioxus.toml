@@ -1,0 +1,8 @@
+[application]
+
+[bundle]
+identifier = "io.dioxus.qonversion.example"
+
+[ios]
+# The Qonversion iOS SDK requires iOS 15.
+deployment_target = "15.0"
