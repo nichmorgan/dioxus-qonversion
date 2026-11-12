@@ -35,7 +35,7 @@ android {
 }
 
 dependencies {
-    implementation("io.qonversion:no-codes:1.8.0")
+    implementation("io.qonversion:no-codes:1.11.1")
 }
 
 tasks.withType<AbstractArchiveTask>().configureEach {

@@ -1,7 +1,7 @@
 //! Android: call the Kotlin host via JNI.
 //!
 //! The app must:
-//! 1. Depend on `io.qonversion:no-codes:1.8.0` (pulls in the Qonversion SDK).
+//! 1. Depend on `io.qonversion:no-codes:1.11.1` (pulls in the Qonversion SDK).
 //! 2. Compile [`android/DioxusQonversionHost.kt`](../../../android/DioxusQonversionHost.kt)
 //!    into the Dioxus Android target.
 //!
@@ -323,7 +323,7 @@ fn find_host_class<'a>(
         .map_err(|e| {
             env.exception_clear();
             QonversionError::HostMissing(format!(
-                "DioxusQonversionHost not found ({e}). Compile android/DioxusQonversionHost.kt into the Android app and add `implementation 'io.qonversion:no-codes:1.8.0'`."
+                "DioxusQonversionHost not found ({e}). Compile android/DioxusQonversionHost.kt into the Android app and add `implementation 'io.qonversion:no-codes:1.11.1'`."
             ))
         })?
         .l()

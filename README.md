@@ -14,7 +14,7 @@ Early — the public API is not stable yet. See the [roadmap](https://github.com
 
 ## Run the example
 
-The demo is `example/`. It needs the [Dioxus CLI](https://dioxuslabs.com/) 0.7.10 and a booted emulator or simulator.
+The demo is `example/`, its own package. The repo root is a library crate, so `dx` has no binary target there. These commands run from `example/`. The demo needs the [Dioxus CLI](https://dioxuslabs.com/) 0.7.10 and a booted emulator or simulator.
 
 ```sh
 cargo binstall dioxus-cli@0.7.10
@@ -27,12 +27,14 @@ Set `QONVERSION_PROJECT_KEY` in `.env` to the client SDK project key, not an `sk
 Boot a device, then serve. Android `--device` is the serial from the first column of `adb devices -l` (such as `emulator-5554`), not the AVD name. Pass `--target x86_64-linux-android` for an x86_64 emulator.
 
 ```sh
+cd example
 dx serve --platform android --device emulator-5554 --target x86_64-linux-android
 ```
 
 On a Mac, with a booted simulator:
 
 ```sh
+cd example
 dx serve --platform ios
 ```
 
@@ -45,6 +47,7 @@ The home screen has two buttons. **Remote Config** shows the payload fetched at 
 The live check needs a booted device, and no `dx serve` already using it. From `example/`:
 
 ```sh
+cd example
 cargo test -- --ignored --nocapture android
 ```
 
@@ -278,7 +281,7 @@ match show_screen("your_context_key") {
 
 Context is taken from `ndk_context` (initialized by Dioxus / wry).
 
-**Fallback (non-`dx` / older CLI):** compile [`android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt`](android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt) into your Android target and add `implementation("io.qonversion:no-codes:1.8.0")`. Same idea as the iOS Swift host note below — not the happy path.
+**Fallback (non-`dx` / older CLI):** compile [`android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt`](android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt) into your Android target and add `implementation("io.qonversion:no-codes:1.11.1")`. Same idea as the iOS Swift host note below — not the happy path.
 
 ### iOS app deps
 

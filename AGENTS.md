@@ -14,7 +14,7 @@
 
 ## Learned Workspace Facts
 
-- The Rust API depends on `dioxus-lib` 0.6. The Android host at `android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt` is auto-bundled by Dioxus CLI 0.7+ via manganis. The non-`dx` fallback is to compile that Kotlin file into the app and add `io.qonversion:no-codes:1.8.0`.
+- The Rust API depends on `dioxus-lib` 0.6. The Android host at `android/src/main/kotlin/io/dioxus/qonversion/DioxusQonversionHost.kt` is auto-bundled by Dioxus CLI 0.7+ via manganis. The non-`dx` fallback is to compile that Kotlin file into the app and add `io.qonversion:no-codes:1.11.1`.
 - Load `DioxusQonversionHost` only with `Context.getClassLoader().loadClass`. `Env::find_class` is for framework classes such as `Looper` and `Activity`. `FindClass` from the JNI worker thread cannot see the app class and can panic `jni` 0.22 on release if a pending exception is left.
 - Android `showScreen` and init completion run on the main looper. Call `show_screen` from Dioxus `spawn` so the billing preflight can wait without deadlocking the UI thread.
 - GitHub Actions `test.yml` reuses `cargo-test.yml`: iOS `cargo test` on `aarch64-apple-ios-sim` (booted simulator, macOS) and Android `cargo test` via cross on `aarch64-linux-android`. There is no extra host-only Ubuntu job.
