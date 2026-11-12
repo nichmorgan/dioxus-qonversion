@@ -161,8 +161,77 @@ fn parse_source(raw: Option<&str>) -> EntitlementSource {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn deferred_purchase_envelope_parses_like_check_entitlements() {
+        let active = json!({
+            "ok": true,
+            "entitlements": {
+                "premium": {
+                    "id": "premium",
+                    "is_active": true,
+                    "product_id": "monthly",
+                    "expiration_date": 1_700_000_000_000i64,
+                    "renew_state": "will_renew",
+                    "source": "appstore"
+                }
+            }
+        });
+        let mut expected_active = HashMap::new();
+        expected_active.insert(
+            "premium".into(),
+            Entitlement {
+                id: "premium".into(),
+                is_active: true,
+                product_id: Some("monthly".into()),
+                expiration_date: Some(1_700_000_000_000),
+                renew_state: EntitlementRenewState::WillRenew,
+                source: EntitlementSource::AppStore,
+            },
+        );
+        assert_eq!(
+            parse_envelope(&active.to_string()).expect("active"),
+            expected_active
+        );
+
+        let inactive = json!({
+            "ok": true,
+            "entitlements": {
+                "premium": {
+                    "id": "premium",
+                    "is_active": false,
+                    "product_id": null,
+                    "expiration_date": null,
+                    "renew_state": "canceled",
+                    "source": "playstore"
+                }
+            }
+        });
+        let mut expected_inactive = HashMap::new();
+        expected_inactive.insert(
+            "premium".into(),
+            Entitlement {
+                id: "premium".into(),
+                is_active: false,
+                product_id: None,
+                expiration_date: None,
+                renew_state: EntitlementRenewState::Canceled,
+                source: EntitlementSource::PlayStore,
+            },
+        );
+        assert_eq!(
+            parse_envelope(&inactive.to_string()).expect("inactive"),
+            expected_inactive
+        );
+
+        assert!(parse_envelope(r#"{"ok":true,"entitlements":{}}"#)
+            .expect("empty")
+            .is_empty());
+    }
 
     #[test]
     fn empty_map_is_success() {

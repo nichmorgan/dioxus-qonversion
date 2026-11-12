@@ -16,28 +16,44 @@ private typealias ScreenEventCallback = @convention(c) (UnsafePointer<CChar>?) -
 public class DioxusQonversionHost: NSObject {
     /// Retains the delegate. No-Codes holds its delegate weakly.
     private static var noCodesEventDelegate: NoCodesEventDelegate?
+    /// Retains the listener. Qonversion holds `setDeferredPurchasesListener` weakly.
+    private static var deferredPurchasesListener: DeferredPurchasesListener?
 
     /// Initialize Qonversion (Subscription Management) and No-Codes with the same project key.
     ///
-    /// `screenFailed` and `screenEvent` are process-lifetime C function pointers.
+    /// `screenFailed`, `screenEvent`, and `entitlementsUpdated` are process-lifetime C function pointers.
     /// SDK setup runs on the main thread.
     ///
     /// - Returns: `nil` on success, or an error description string on failure.
-    @objc(initializeWithProjectKey:sandbox:screenFailed:screenEvent:)
+    @objc(initializeWithProjectKey:sandbox:screenFailed:screenEvent:entitlementsUpdated:)
     public static func initialize(
         projectKey: String,
         sandbox: Bool,
         screenFailed: UnsafeRawPointer,
-        screenEvent: UnsafeRawPointer
+        screenEvent: UnsafeRawPointer,
+        entitlementsUpdated: UnsafeRawPointer
     ) -> String? {
         let failed = unsafeBitCast(screenFailed, to: ScreenFailedCallback.self)
         let event = unsafeBitCast(screenEvent, to: ScreenEventCallback.self)
+        let entitlements = unsafeBitCast(entitlementsUpdated, to: ScreenEventCallback.self)
         if Thread.isMainThread {
-            return initializeOnMain(projectKey: projectKey, sandbox: sandbox, failed: failed, event: event)
+            return initializeOnMain(
+                projectKey: projectKey,
+                sandbox: sandbox,
+                failed: failed,
+                event: event,
+                entitlements: entitlements
+            )
         }
         var result: String?
         DispatchQueue.main.sync {
-            result = initializeOnMain(projectKey: projectKey, sandbox: sandbox, failed: failed, event: event)
+            result = initializeOnMain(
+                projectKey: projectKey,
+                sandbox: sandbox,
+                failed: failed,
+                event: event,
+                entitlements: entitlements
+            )
         }
         return result
     }
@@ -46,7 +62,8 @@ public class DioxusQonversionHost: NSObject {
         projectKey: String,
         sandbox: Bool,
         failed: ScreenFailedCallback,
-        event: ScreenEventCallback
+        event: ScreenEventCallback,
+        entitlements: ScreenEventCallback
     ) -> String? {
         let trimmed = projectKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -62,6 +79,9 @@ public class DioxusQonversionHost: NSObject {
         )
         qonversionConfig.setEnvironment(sandbox ? .sandbox : .production)
         Qonversion.initWithConfig(qonversionConfig)
+        let deferred = DeferredPurchasesListener(callback: entitlements)
+        deferredPurchasesListener = deferred
+        Qonversion.shared().setDeferredPurchasesListener(deferred)
 
         let noCodesConfig = NoCodesConfiguration(projectKey: trimmed, delegate: delegate)
         NoCodes.initialize(with: noCodesConfig)
@@ -317,6 +337,14 @@ public class DioxusQonversionHost: NSObject {
         }
     }
 
+    fileprivate static func notifyDeferredEntitlements(
+        _ entitlements: [String: Qonversion.Entitlement],
+        callback: ScreenEventCallback
+    ) {
+        let json = encodeEntitlementsSuccess(entitlements)
+        json.withCString { callback($0) }
+    }
+
     private static func encodeEntitlementsSuccess(
         _ entitlements: [String: Qonversion.Entitlement]
     ) -> String {
@@ -504,6 +532,23 @@ private func stringifyJson(_ dict: [String: Any]) -> String? {
         return nil
     }
     return string
+}
+
+/// Forwards a deferred purchase (Ask to Buy, Play pending) as an entitlements envelope.
+private final class DeferredPurchasesListener: NSObject, Qonversion.DeferredPurchasesListener {
+    private let callback: ScreenEventCallback
+
+    init(callback: @escaping ScreenEventCallback) {
+        self.callback = callback
+    }
+
+    func deferredPurchaseCompleted(_ purchaseResult: Qonversion.PurchaseResult) {
+        guard purchaseResult.isSuccessful else {
+            return
+        }
+        let entitlements = purchaseResult.entitlements ?? [String: Qonversion.Entitlement]()
+        DioxusQonversionHost.notifyDeferredEntitlements(entitlements, callback: callback)
+    }
 }
 
 /// Forwards No-Codes load failures and purchase / restore / finish / custom-action events.

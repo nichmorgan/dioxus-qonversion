@@ -4,6 +4,7 @@
 // iOS-only; Android registers JNI methods that call `hop_*` directly.
 #![cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 
+use std::collections::HashMap;
 #[cfg(target_os = "ios")]
 use std::ffi::CStr;
 #[cfg(target_os = "ios")]
@@ -15,6 +16,7 @@ use std::thread;
 
 use serde_json::Value;
 
+use crate::entitlements::{self, Entitlement};
 use crate::error::QonversionError;
 use crate::init;
 use crate::native;
@@ -54,10 +56,12 @@ impl<T: Send + 'static> HandlerSlot<T> {
 
 static SCREEN_FAILED_HANDLER: HandlerSlot<QonversionError> = HandlerSlot::new();
 static SCREEN_EVENT_HANDLER: HandlerSlot<ScreenEvent> = HandlerSlot::new();
+static ENTITLEMENTS_UPDATED_HANDLER: HandlerSlot<HashMap<String, Entitlement>> = HandlerSlot::new();
 
 enum NotifyJob {
     Failed(QonversionError),
     EventJson(String),
+    EntitlementsJson(String),
 }
 
 fn notify_sender() -> mpsc::Sender<NotifyJob> {
@@ -77,6 +81,7 @@ fn notify_sender() -> mpsc::Sender<NotifyJob> {
                                 dispatch_screen_failed(err);
                             }
                         },
+                        NotifyJob::EntitlementsJson(json) => deliver_entitlements_json(&json),
                     }
                 }
             })
@@ -177,6 +182,23 @@ pub fn clear_screen_event_handler() {
     SCREEN_EVENT_HANDLER.clear();
 }
 
+/// Register a process-wide handler for a deferred purchase that finishes later.
+///
+/// Qonversion calls this only for deferred purchases (Ask to Buy, Play pending),
+/// not for a normal purchase, an expiry, or a refund. The map is the same
+/// envelope [`crate::check_entitlements`] returns. Replacing an existing
+/// handler is allowed. Delivery is off the native main thread.
+pub fn set_entitlements_updated_handler(
+    handler: impl Fn(HashMap<String, Entitlement>) + Send + Sync + 'static,
+) {
+    ENTITLEMENTS_UPDATED_HANDLER.set(handler);
+}
+
+/// Clear the handler registered by [`set_entitlements_updated_handler`].
+pub fn clear_entitlements_updated_handler() {
+    ENTITLEMENTS_UPDATED_HANDLER.clear();
+}
+
 /// Invoke the registered handler, if any. Panics in the handler are swallowed.
 pub(crate) fn dispatch_screen_failed(error: QonversionError) {
     SCREEN_FAILED_HANDLER.dispatch(error);
@@ -192,6 +214,23 @@ pub(crate) fn hop_screen_failed(error: QonversionError) {
 
 pub(crate) fn hop_screen_event_json(json: String) {
     let _ = notify_sender().send(NotifyJob::EventJson(json));
+}
+
+pub(crate) fn hop_entitlements_json(json: String) {
+    let _ = notify_sender().send(NotifyJob::EntitlementsJson(json));
+}
+
+pub(crate) fn deliver_entitlements_json(json: &str) {
+    match entitlements::parse_envelope(json) {
+        Ok(map) => dispatch_entitlements_updated(map),
+        Err(err) => {
+            eprintln!("dioxus-qonversion: malformed entitlements update: {err}");
+        }
+    }
+}
+
+pub(crate) fn dispatch_entitlements_updated(entitlements: HashMap<String, Entitlement>) {
+    ENTITLEMENTS_UPDATED_HANDLER.dispatch(entitlements);
 }
 
 pub(crate) fn parse_event_envelope(json: &str) -> Result<ScreenEvent, QonversionError> {
@@ -288,12 +327,28 @@ pub(crate) extern "C" fn dioxus_qonversion_notify_screen_event(json: *const c_ch
     hop_screen_event_json(json);
 }
 
+/// C callback passed to the iOS host during initialize.
+#[cfg(target_os = "ios")]
+pub(crate) extern "C" fn dioxus_qonversion_notify_entitlements(json: *const c_char) {
+    if json.is_null() {
+        return;
+    }
+    let json = unsafe { CStr::from_ptr(json) }
+        .to_string_lossy()
+        .into_owned();
+    hop_entitlements_json(json);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::queue;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
+
+    use super::*;
+    use crate::entitlements::{self, Entitlement};
+    use crate::queue;
+    use rstest::rstest;
 
     fn restore_handler() -> impl Drop {
         struct Restore;
@@ -301,6 +356,7 @@ mod tests {
             fn drop(&mut self) {
                 clear_screen_failed_handler();
                 clear_screen_event_handler();
+                clear_entitlements_updated_handler();
             }
         }
         Restore
@@ -380,6 +436,92 @@ mod tests {
         clear_screen_event_handler();
         dispatch_screen_event(ScreenEvent::Finished);
         assert_eq!(hits.load(Ordering::SeqCst), 11);
+    }
+
+    #[test]
+    fn entitlements_handler_set_dispatch_replace_and_clear() {
+        let _guard = queue::test_lock();
+        let _restore = restore_handler();
+        clear_entitlements_updated_handler();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(StdMutex::new(None::<HashMap<String, Entitlement>>));
+
+        let hits_a = Arc::clone(&hits);
+        let last_a = Arc::clone(&last);
+        set_entitlements_updated_handler(move |entitlements| {
+            hits_a.fetch_add(1, Ordering::SeqCst);
+            *last_a.lock().unwrap() = Some(entitlements);
+        });
+
+        let mut active = HashMap::new();
+        active.insert(
+            "premium".into(),
+            Entitlement {
+                id: "premium".into(),
+                is_active: true,
+                product_id: None,
+                expiration_date: None,
+                renew_state: crate::EntitlementRenewState::Unknown,
+                source: crate::EntitlementSource::Unknown,
+            },
+        );
+        dispatch_entitlements_updated(active.clone());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(last.lock().unwrap().clone(), Some(active));
+
+        let hits_b = Arc::clone(&hits);
+        set_entitlements_updated_handler(move |_| {
+            hits_b.fetch_add(10, Ordering::SeqCst);
+        });
+        dispatch_entitlements_updated(HashMap::new());
+        assert_eq!(hits.load(Ordering::SeqCst), 11);
+
+        clear_entitlements_updated_handler();
+        dispatch_entitlements_updated(HashMap::new());
+        assert_eq!(hits.load(Ordering::SeqCst), 11);
+    }
+
+    #[rstest]
+    #[case(
+        r#"{"ok":true,"entitlements":{"premium":{"id":"premium","is_active":true,"product_id":"monthly","expiration_date":1700000000000,"renew_state":"will_renew","source":"appstore"}}}"#
+    )]
+    #[case(
+        r#"{"ok":true,"entitlements":{"premium":{"id":"premium","is_active":false,"product_id":null,"expiration_date":null,"renew_state":"canceled","source":"playstore"}}}"#
+    )]
+    #[case(r#"{"ok":true,"entitlements":{}}"#)]
+    fn deliver_entitlements_json_reaches_the_handler(#[case] json: &str) {
+        let _guard = queue::test_lock();
+        let _restore = restore_handler();
+        clear_entitlements_updated_handler();
+
+        let last = Arc::new(StdMutex::new(None::<HashMap<String, Entitlement>>));
+        let last_a = Arc::clone(&last);
+        set_entitlements_updated_handler(move |entitlements| {
+            *last_a.lock().unwrap() = Some(entitlements);
+        });
+
+        deliver_entitlements_json(json);
+        assert_eq!(
+            last.lock().unwrap().clone().expect("delivered"),
+            entitlements::parse_envelope(json).expect("parse")
+        );
+    }
+
+    #[test]
+    fn deliver_entitlements_json_ignores_malformed() {
+        let _guard = queue::test_lock();
+        let _restore = restore_handler();
+        clear_entitlements_updated_handler();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_a = Arc::clone(&hits);
+        set_entitlements_updated_handler(move |_| {
+            hits_a.fetch_add(1, Ordering::SeqCst);
+        });
+
+        deliver_entitlements_json("not json");
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 
     #[test]

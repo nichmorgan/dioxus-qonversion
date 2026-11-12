@@ -1,7 +1,7 @@
 //! Android: call the Kotlin host via JNI.
 //!
 //! The app must:
-//! 1. Depend on `io.qonversion:no-codes:1.+` (pulls in the Qonversion SDK).
+//! 1. Depend on `io.qonversion:no-codes:1.8.0` (pulls in the Qonversion SDK).
 //! 2. Compile [`android/DioxusQonversionHost.kt`](../../../android/DioxusQonversionHost.kt)
 //!    into the Dioxus Android target.
 //!
@@ -33,6 +33,11 @@ const NOTIFY_SCREEN_FAILED: NativeMethod = native_method! {
 const NOTIFY_SCREEN_EVENT: NativeMethod = native_method! {
     static fn notify_screen_event(json: JString),
     name = "notifyScreenEvent",
+};
+
+const NOTIFY_ENTITLEMENTS_UPDATED: NativeMethod = native_method! {
+    static fn notify_entitlements_updated(json: JString),
+    name = "notifyEntitlementsUpdated",
 };
 
 impl From<jni::errors::Error> for QonversionError {
@@ -318,7 +323,7 @@ fn find_host_class<'a>(
         .map_err(|e| {
             env.exception_clear();
             QonversionError::HostMissing(format!(
-                "DioxusQonversionHost not found ({e}). Compile android/DioxusQonversionHost.kt into the Android app and add `implementation 'io.qonversion:no-codes:1.+'`."
+                "DioxusQonversionHost not found ({e}). Compile android/DioxusQonversionHost.kt into the Android app and add `implementation 'io.qonversion:no-codes:1.8.0'`."
             ))
         })?
         .l()
@@ -375,10 +380,19 @@ fn register_screen_native_methods(
     env: &mut Env<'_>,
     host: &JClass<'_>,
 ) -> Result<(), QonversionError> {
-    unsafe { env.register_native_methods(host, &[NOTIFY_SCREEN_FAILED, NOTIFY_SCREEN_EVENT]) }
-        .map_err(|e| QonversionError::Native {
-            message: format!("failed to register screen native methods: {e}"),
-        })
+    unsafe {
+        env.register_native_methods(
+            host,
+            &[
+                NOTIFY_SCREEN_FAILED,
+                NOTIFY_SCREEN_EVENT,
+                NOTIFY_ENTITLEMENTS_UPDATED,
+            ],
+        )
+    }
+    .map_err(|e| QonversionError::Native {
+        message: format!("failed to register screen native methods: {e}"),
+    })
 }
 
 fn notify_screen_failed<'local>(
@@ -402,6 +416,16 @@ fn notify_screen_event<'local>(
 ) -> Result<(), jni::errors::Error> {
     let json = json.try_to_string(env).unwrap_or_default();
     crate::screen::hop_screen_event_json(json);
+    Ok(())
+}
+
+fn notify_entitlements_updated<'local>(
+    env: &mut Env<'local>,
+    _class: JClass<'local>,
+    json: JString<'local>,
+) -> Result<(), jni::errors::Error> {
+    let json = json.try_to_string(env).unwrap_or_default();
+    crate::screen::hop_entitlements_json(json);
     Ok(())
 }
 

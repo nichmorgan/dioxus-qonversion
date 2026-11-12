@@ -39,17 +39,19 @@ pub use remote_config::{
     RemoteConfigurationAssignmentType, RemoteConfigurationSource, RemoteConfigurationSourceType,
 };
 pub use screen::{
-    clear_screen_event_handler, clear_screen_failed_handler, set_screen_event_handler,
-    set_screen_failed_handler, show_screen, ScreenActionKind, ScreenEvent,
+    clear_entitlements_updated_handler, clear_screen_event_handler, clear_screen_failed_handler,
+    set_entitlements_updated_handler, set_screen_event_handler, set_screen_failed_handler,
+    show_screen, ScreenActionKind, ScreenEvent,
 };
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
     pub use crate::{
-        check_entitlements, check_entitlements_async, clear_screen_event_handler,
-        clear_screen_failed_handler, identify, identify_async, initialize, is_initialized,
-        load_screen, load_screen_async, logout, logout_async, remote_config, remote_config_async,
-        remote_config_default, remote_config_default_async, restore, restore_async, sdk_timeout,
+        check_entitlements, check_entitlements_async, clear_entitlements_updated_handler,
+        clear_screen_event_handler, clear_screen_failed_handler, identify, identify_async,
+        initialize, is_initialized, load_screen, load_screen_async, logout, logout_async,
+        remote_config, remote_config_async, remote_config_default, remote_config_default_async,
+        restore, restore_async, sdk_timeout, set_entitlements_updated_handler,
         set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout, show_screen,
         Entitlement, EntitlementRenewState, EntitlementSource, Environment, Experiment,
         ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode, LoadedScreen,

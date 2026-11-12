@@ -13,6 +13,7 @@ import com.qonversion.android.sdk.Qonversion
 import com.qonversion.android.sdk.QonversionConfig
 import com.qonversion.android.sdk.dto.QEnvironment
 import com.qonversion.android.sdk.dto.QLaunchMode
+import com.qonversion.android.sdk.dto.QPurchaseResult
 import com.qonversion.android.sdk.dto.QRemoteConfig
 import com.qonversion.android.sdk.dto.QRemoteConfigurationSource
 import com.qonversion.android.sdk.dto.QUser
@@ -21,6 +22,7 @@ import com.qonversion.android.sdk.dto.QonversionErrorCode
 import com.qonversion.android.sdk.dto.entitlements.QEntitlement
 import com.qonversion.android.sdk.dto.entitlements.QEntitlementSource
 import com.qonversion.android.sdk.dto.experiments.QExperiment
+import com.qonversion.android.sdk.listeners.QDeferredPurchasesListener
 import com.qonversion.android.sdk.listeners.QonversionEntitlementsCallback
 import com.qonversion.android.sdk.listeners.QonversionRemoteConfigCallback
 import com.qonversion.android.sdk.listeners.QonversionUserCallback
@@ -62,6 +64,17 @@ object DioxusQonversionHost {
     private const val STORE_PREFLIGHT_TIMEOUT_MS = 4000L
     /** Matches Rust `DEFAULT_SDK_TIMEOUT` for the initialize main hop. */
     private const val INIT_TIMEOUT_MS = 8000L
+
+    private val deferredPurchasesListener = object : QDeferredPurchasesListener {
+        override fun deferredPurchaseCompleted(purchaseResult: QPurchaseResult) {
+            if (!purchaseResult.isSuccessful) {
+                return
+            }
+            notifyNativeSafe("notifyEntitlementsUpdated") {
+                notifyEntitlementsUpdated(encodeEntitlementsSuccess(purchaseResult.entitlements))
+            }
+        }
+    }
 
     private val screenFailedDelegate = object : NoCodesDelegate {
         override fun onActionFinishedExecuting(action: QAction) {
@@ -128,6 +141,7 @@ object DioxusQonversionHost {
                     .setEnvironment(environment)
                     .build()
                 Qonversion.initialize(qonversionConfig)
+                Qonversion.shared.setDeferredPurchasesListener(deferredPurchasesListener)
 
                 val noCodesConfig = NoCodesConfig.Builder(context.applicationContext, trimmed)
                     .setDelegate(screenFailedDelegate)
@@ -235,6 +249,13 @@ object DioxusQonversionHost {
      */
     @JvmStatic
     external fun notifyScreenEvent(json: String)
+
+    /**
+     * JNI target registered from Rust during initialize.
+     * [json] is the same `ok` + `entitlements` envelope as [checkEntitlements].
+     */
+    @JvmStatic
+    external fun notifyEntitlementsUpdated(json: String)
 
     /**
      * Present a No-Codes screen by context key (fire-and-present).

@@ -23,7 +23,7 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
         let host = host_class()?;
         if !supports_init(host) {
             return Err(QonversionError::HostMissing(
-                "DioxusQonversionHost does not accept screen callbacks. Rebuild the iOS app with the matching Swift host.".into(),
+                "DioxusQonversionHost does not accept screen and deferred-purchase callbacks. Rebuild the iOS app with the matching Swift host.".into(),
             ));
         }
         let project_key = nsstring(&config.project_key)?;
@@ -34,6 +34,8 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
             crate::screen::dioxus_qonversion_notify_screen_failed;
         let event: extern "C" fn(*const c_char) =
             crate::screen::dioxus_qonversion_notify_screen_event;
+        let entitlements: extern "C" fn(*const c_char) =
+            crate::screen::dioxus_qonversion_notify_entitlements;
 
         let err: *mut Object = unsafe {
             msg_send![
@@ -42,6 +44,7 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
                 sandbox: sandbox as u8
                 screenFailed: failed as *const c_void
                 screenEvent: event as *const c_void
+                entitlementsUpdated: entitlements as *const c_void
             ]
         };
         map_host_result(err)
@@ -49,7 +52,8 @@ pub(crate) fn initialize(config: &InitConfig) -> Result<(), QonversionError> {
 }
 
 fn supports_init(host: &Class) -> bool {
-    let selector = sel!(initializeWithProjectKey:sandbox:screenFailed:screenEvent:);
+    let selector =
+        sel!(initializeWithProjectKey:sandbox:screenFailed:screenEvent:entitlementsUpdated:);
     let supported: BOOL = unsafe { msg_send![host, respondsToSelector: selector] };
     supported != NO
 }
