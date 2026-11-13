@@ -192,6 +192,63 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
     })
 }
 
+pub(crate) fn set_user_property(key: &str, value: &str) -> Result<(), QonversionError> {
+    call_set_user_property(
+        jni_str!("setUserProperty"),
+        "DioxusQonversionHost.setUserProperty",
+        key,
+        value,
+    )
+}
+
+pub(crate) fn set_custom_user_property(key: &str, value: &str) -> Result<(), QonversionError> {
+    call_set_user_property(
+        jni_str!("setCustomUserProperty"),
+        "DioxusQonversionHost.setCustomUserProperty",
+        key,
+        value,
+    )
+}
+
+fn call_set_user_property(
+    method: &JNIStr,
+    what: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+    let key = key.to_string();
+    let value = value.to_string();
+    let timeout_ms = crate::queue::timeout_ms();
+
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+        let key = env.new_string(&key).map_err(|e| QonversionError::Native {
+            message: format!("failed to create property key string: {e}"),
+        })?;
+        let value = env
+            .new_string(&value)
+            .map_err(|e| QonversionError::Native {
+                message: format!("failed to create property value string: {e}"),
+            })?;
+
+        let err = call_host_jstring(
+            env,
+            &host,
+            method,
+            jni_sig!("(Ljava/lang/String;Ljava/lang/String;J)Ljava/lang/String;"),
+            &[
+                JValue::Object(&key),
+                JValue::Object(&value),
+                JValue::Long(timeout_ms),
+            ],
+            what,
+        )?;
+        map_optional_host_error(err)
+    })
+}
+
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
     let (vm, context_raw) = java_vm_and_context()?;
     let context_key = context_key.map(str::to_string);

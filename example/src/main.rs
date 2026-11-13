@@ -1,16 +1,17 @@
-//! Home screen of square feature buttons. Remote Config and No-Code.
+//! Home screen of square feature buttons. Remote Config, No-Code, User Properties.
 //!
 //! Remote Config and `load_screen` run when the app launches, not when a button
 //! is tapped, so the e2e test can read the `QONVERSION_E2E` line without touching
 //! the UI. That line carries the payload and a No-Codes screen id. The No-Code
-//! button still calls `show_screen`.
+//! button still calls `show_screen`. User Properties is a manual demo only.
 //!
 //! `cp .env.example .env`, set the SDK Project Key, then `dx serve --platform android`.
 
 use dioxus::prelude::*;
 use dioxus_qonversion::{
-    initialize, load_screen_async, remote_config_async, remote_config_default_async, show_screen,
-    Environment, InitConfig, LaunchMode, QonversionError, RemoteConfig,
+    initialize, load_screen_async, remote_config_async, remote_config_default_async,
+    set_custom_user_property_async, set_user_property_async, show_screen, Environment, InitConfig,
+    LaunchMode, QonversionError, RemoteConfig, UserPropertyKey,
 };
 use serde_json::{json, Value};
 
@@ -39,6 +40,16 @@ h1 { font-size: 1.4rem; margin: 16px; }
     background: transparent;
     font-size: 1rem;
 }
+.action {
+    margin: 16px;
+    padding: 12px 16px;
+    border: 0;
+    border-radius: 12px;
+    background: #3d3a8c;
+    color: white;
+    font-size: 1rem;
+    font-weight: 600;
+}
 pre, .status { margin: 16px; white-space: pre-wrap; word-break: break-word; }
 "#;
 
@@ -46,6 +57,7 @@ pre, .status { margin: 16px; white-space: pre-wrap; word-break: break-word; }
 enum Screen {
     Home,
     RemoteConfig,
+    UserProperties,
 }
 
 fn main() {
@@ -55,6 +67,7 @@ fn main() {
 fn app() -> Element {
     let mut screen = use_signal(|| Screen::Home);
     let mut no_code_error = use_signal(|| None::<String>);
+    let mut user_properties_status = use_signal(|| None::<String>);
     // Runs at launch. The Remote Config screen only displays this result.
     let report = use_resource(|| async {
         let report = match fetch().await {
@@ -98,6 +111,14 @@ fn app() -> Element {
                         },
                         "No-Code"
                     }
+                    button {
+                        class: "tile",
+                        onclick: move |_| {
+                            user_properties_status.set(None);
+                            screen.set(Screen::UserProperties);
+                        },
+                        "User Properties"
+                    }
                 }
                 if let Some(error) = no_code_error() {
                     p { class: "status", "Error: {error}" }
@@ -111,6 +132,32 @@ fn app() -> Element {
                 }
                 h1 { "Remote Config" }
                 {remote_config_body(report.cloned())}
+            },
+            Screen::UserProperties => rsx! {
+                button {
+                    class: "back",
+                    onclick: move |_| screen.set(Screen::Home),
+                    "Back"
+                }
+                h1 { "User Properties" }
+                button {
+                    class: "action",
+                    onclick: move |_| {
+                        spawn(async move {
+                            match set_demo_user_properties().await {
+                                Ok(()) => user_properties_status
+                                    .set(Some("Set email and liked_app.".into())),
+                                Err(error) => {
+                                    user_properties_status.set(Some(error.to_string()))
+                                }
+                            }
+                        });
+                    },
+                    "Set demo properties"
+                }
+                if let Some(status) = user_properties_status() {
+                    p { class: "status", "{status}" }
+                }
             },
         }
     }
@@ -127,6 +174,13 @@ fn remote_config_body(report: Option<Value>) -> Element {
             }
         },
     }
+}
+
+async fn set_demo_user_properties() -> Result<(), QonversionError> {
+    // Init runs in the launch `use_resource`; require it before setting properties.
+    set_user_property_async(UserPropertyKey::Email, "demo@example.com").await?;
+    set_custom_user_property_async("liked_app", "yes").await?;
+    Ok(())
 }
 
 async fn load_no_code() -> Result<String, QonversionError> {

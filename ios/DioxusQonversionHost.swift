@@ -251,6 +251,65 @@ public class DioxusQonversionHost: NSObject {
         }
     }
 
+    /// Set a Qonversion-defined user property.
+    ///
+    /// `key` is the Rust host key (e.g. `"email"`). Hops to the main queue and **waits**.
+    ///
+    /// - Returns: `nil` on success, or an error description string on failure.
+    @objc(setUserPropertyWithKey:value:timeoutMs:)
+    public static func setUserProperty(key: String, value: String, timeoutMs: Int64) -> String? {
+        guard let propertyKey = definedUserPropertyKey(key) else {
+            return "unknown user property key: \(key)"
+        }
+        return runOnMainSync(timeoutMs: timeoutMs) {
+            Qonversion.shared().setUserProperty(propertyKey, value: value)
+            return nil
+        }
+    }
+
+    /// Set a custom user property.
+    ///
+    /// Hops to the main queue and **waits**.
+    ///
+    /// - Returns: `nil` on success, or an error description string on failure.
+    @objc(setCustomUserPropertyWithKey:value:timeoutMs:)
+    public static func setCustomUserProperty(key: String, value: String, timeoutMs: Int64) -> String? {
+        return runOnMainSync(timeoutMs: timeoutMs) {
+            Qonversion.shared().setCustomUserProperty(key, value: value)
+            return nil
+        }
+    }
+
+    private static func definedUserPropertyKey(_ key: String) -> Qonversion.UserPropertyKey? {
+        switch key {
+        case "email": return .email
+        case "name": return .name
+        case "kochava_device_id": return .kochavaDeviceID
+        case "appsflyer_user_id": return .appsFlyerUserID
+        case "adjust_ad_id": return .adjustAdID
+        case "custom_user_id": return .userID
+        case "facebook_attribution": return .facebookAttribution
+        case "firebase_app_instance_id": return .firebaseAppInstanceId
+        case "app_set_id": return .appSetId
+        case "advertising_id": return .advertisingID
+        case "pushwoosh_user_id": return .pushWooshUserId
+        case "pushwoosh_hw_id": return .pushWooshHwId
+        case "appmetrica_device_id": return .appMetricaDeviceId
+        case "appmetrica_user_profile_id": return .appMetricaUserProfileId
+        case "tenjin_analytics_installation_id": return .tenjinAnalyticsInstallationId
+        default: return nil
+        }
+    }
+
+    private static func runOnMainSync(timeoutMs: Int64, block: () -> String?) -> String? {
+        if Thread.isMainThread {
+            return block()
+        }
+        return awaitOnMain(timeoutMs: timeoutMs, timeoutValue: hostTimeoutSentinel as String?) { complete in
+            complete(block())
+        }
+    }
+
     private static let hostTimeoutSentinel = "dioxus_qonversion:timeout"
 
     private static func awaitOnMain<T>(

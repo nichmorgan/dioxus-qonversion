@@ -49,6 +49,16 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
     sys::logout()
 }
 
+/// Set a Qonversion-defined user property by host key string.
+pub(crate) fn set_user_property(key: &str, value: &str) -> Result<(), QonversionError> {
+    sys::set_user_property(key, value)
+}
+
+/// Set a custom user property.
+pub(crate) fn set_custom_user_property(key: &str, value: &str) -> Result<(), QonversionError> {
+    sys::set_custom_user_property(key, value)
+}
+
 /// Fetch Remote Config. `None` is the dashboard empty context key.
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
     sys::remote_config(context_key)

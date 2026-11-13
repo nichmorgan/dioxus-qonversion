@@ -19,6 +19,7 @@ mod native;
 mod queue;
 mod remote_config;
 mod screen;
+mod user_properties;
 
 pub use config::{Environment, InitConfig, LaunchMode};
 pub use entitlements::{
@@ -43,6 +44,10 @@ pub use screen::{
     set_entitlements_updated_handler, set_screen_event_handler, set_screen_failed_handler,
     show_screen, ScreenActionKind, ScreenEvent,
 };
+pub use user_properties::{
+    set_custom_user_property, set_custom_user_property_async, set_user_property,
+    set_user_property_async, UserPropertyKey,
+};
 
 /// Convenient re-exports for application crates.
 pub mod prelude {
@@ -51,13 +56,15 @@ pub mod prelude {
         clear_screen_event_handler, clear_screen_failed_handler, identify, identify_async,
         initialize, is_initialized, load_screen, load_screen_async, logout, logout_async,
         remote_config, remote_config_async, remote_config_default, remote_config_default_async,
-        restore, restore_async, sdk_timeout, set_entitlements_updated_handler,
-        set_screen_event_handler, set_screen_failed_handler, set_sdk_timeout, show_screen,
-        Entitlement, EntitlementRenewState, EntitlementSource, Environment, Experiment,
-        ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode, LoadedScreen,
+        restore, restore_async, sdk_timeout, set_custom_user_property,
+        set_custom_user_property_async, set_entitlements_updated_handler, set_screen_event_handler,
+        set_screen_failed_handler, set_sdk_timeout, set_user_property, set_user_property_async,
+        show_screen, Entitlement, EntitlementRenewState, EntitlementSource, Environment,
+        Experiment, ExperimentGroup, ExperimentGroupType, InitConfig, LaunchMode, LoadedScreen,
         QonversionError, RemoteConfig, RemoteConfigurationAssignmentType,
         RemoteConfigurationSource, RemoteConfigurationSourceType, ScreenActionKind, ScreenEvent,
-        ScreenVariable, ScreenVariableKind, ScreenVariableValue, DEFAULT_SDK_TIMEOUT,
+        ScreenVariable, ScreenVariableKind, ScreenVariableValue, UserPropertyKey,
+        DEFAULT_SDK_TIMEOUT,
     };
 }
 
@@ -252,6 +259,61 @@ mod tests {
         init::reset_initialized_for_test();
         init::mark_initialized_for_test();
         let err = queue::off_main(logout).expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn set_user_property_rejects_empty_value() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = set_user_property(UserPropertyKey::Email, "  ").expect_err("empty value");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn set_custom_user_property_rejects_bad_key() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = set_custom_user_property("_q_email", "x").expect_err("reserved key");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+        let err = set_custom_user_property("bad key", "x").expect_err("illegal chars");
+        assert!(matches!(err, QonversionError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn set_user_property_requires_init() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        let err = set_user_property(UserPropertyKey::Email, "a@b.c")
+            .expect_err("must require initialize");
+        assert_eq!(err, QonversionError::NotInitialized);
+    }
+
+    #[test]
+    fn set_user_property_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = queue::off_main(|| set_user_property(UserPropertyKey::Email, "a@b.c"))
+            .expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn set_custom_user_property_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        init::reset_initialized_for_test();
+        init::mark_initialized_for_test();
+        let err = queue::off_main(|| set_custom_user_property("liked_app", "yes"))
+            .expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]
