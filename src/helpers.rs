@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::error::QonversionError;
 
-/// Native string APIs (`identify`, `logout`) return this when the timed wait expires.
+/// Native string APIs (`identify`, `logout`, user properties) return this when the timed wait expires.
 #[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
 pub(crate) const HOST_TIMEOUT_SENTINEL: &str = "dioxus_qonversion:timeout";
 

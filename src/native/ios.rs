@@ -100,6 +100,32 @@ pub(crate) fn logout() -> Result<(), QonversionError> {
     })
 }
 
+pub(crate) fn set_user_property(key: &str, value: &str) -> Result<(), QonversionError> {
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let key = nsstring(key)?;
+        let value = nsstring(value)?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let err: *mut Object = unsafe {
+            msg_send![host, setUserPropertyWithKey: key value: value timeoutMs: timeout_ms]
+        };
+        map_host_result(err)
+    })
+}
+
+pub(crate) fn set_custom_user_property(key: &str, value: &str) -> Result<(), QonversionError> {
+    autoreleasepool(|| {
+        let host = host_class()?;
+        let key = nsstring(key)?;
+        let value = nsstring(value)?;
+        let timeout_ms = crate::queue::timeout_ms();
+        let err: *mut Object = unsafe {
+            msg_send![host, setCustomUserPropertyWithKey: key value: value timeoutMs: timeout_ms]
+        };
+        map_host_result(err)
+    })
+}
+
 pub(crate) fn remote_config(context_key: Option<&str>) -> Result<String, QonversionError> {
     autoreleasepool(|| {
         let host = host_class()?;

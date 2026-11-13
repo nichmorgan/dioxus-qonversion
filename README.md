@@ -73,7 +73,7 @@ Native calls go through a thin host — Kotlin on Android (auto-bundled by Dioxu
 
 | Layer | Owns |
 | -- | -- |
-| **Library** | Qonversion primitives (init, identify, logout, paywall, entitlements, restore, …), serial SDK queue + default timeout |
+| **Library** | Qonversion primitives (init, identify, logout, user properties, paywall, entitlements, restore, …), serial SDK queue + default timeout |
 | **App** | Project key, stable user id, Remote Config field names, which entitlement id is premium, gating UI, fail-open vs fail-closed policy |
 
 ## Initialize
@@ -108,9 +108,28 @@ spawn(async move {
 });
 ```
 
-`identify` / `logout`, Remote Config, `load_screen`, `check_entitlements`, and `restore` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Await the `*_async` variants from Dioxus `spawn`. On iOS, `spawn` futures run on the UI thread, and the blocking variants return `QonversionError::MainThread` there — those are for a background thread. Timing out returns `QonversionError::Timeout` and does **not** cancel native work. The worker is freed after the native wait expires, so a later queued call may overlap still-running SDK work. `show_screen` stays fire-and-present and is **not** on this queue.
+`identify` / `logout`, user properties, Remote Config, `load_screen`, `check_entitlements`, and `restore` go through one **serial SDK queue** with a default **8s** timeout (`DEFAULT_SDK_TIMEOUT`, override with `set_sdk_timeout`). Await the `*_async` variants from Dioxus `spawn`. On iOS, `spawn` futures run on the UI thread, and the blocking variants return `QonversionError::MainThread` there — those are for a background thread. Timing out returns `QonversionError::Timeout` and does **not** cancel native work. The worker is freed after the native wait expires, so a later queued call may overlap still-running SDK work. `show_screen` stays fire-and-present and is **not** on this queue.
 
 If identify fails or times out, anonymous paywalls can still work. **Fail-open vs fail-closed is app policy** — this crate does not decide. The library does not memoize Remote Config or entitlements; clear any app-side caches yourself after `identify` / `logout`. The native SDK also drops its **in-memory** Remote Config cache on those calls (identify cache-drop even with the same id needs iOS 6.14.0+ / Android 9.7.0+), so refetch `remote_config` afterwards if you still need the payload.
+
+## User properties
+
+After init, set Qonversion-defined or custom attributes for segmentation, analytics, and integrations. Custom keys may use `A-Za-z`, digits, and `_.:-` only (not a `_q_` prefix).
+
+```rust
+use dioxus::prelude::spawn;
+use dioxus_qonversion::{
+    set_custom_user_property_async, set_user_property_async, UserPropertyKey,
+};
+
+spawn(async {
+    set_user_property_async(UserPropertyKey::Email, "me@example.com").await?;
+    set_custom_user_property_async("liked_app", "yes").await?;
+    Ok::<(), dioxus_qonversion::QonversionError>(())
+});
+```
+
+Same **serial SDK queue** and **8s** timeout as `identify`. Pending properties flush when presenting via `show_screen`; official `loadScreen` does not. The `example/` app has a **User Properties** tile for a manual check (`dx run`).
 
 ## Remote Config
 

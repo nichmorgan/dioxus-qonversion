@@ -22,6 +22,7 @@ import com.qonversion.android.sdk.dto.QonversionErrorCode
 import com.qonversion.android.sdk.dto.entitlements.QEntitlement
 import com.qonversion.android.sdk.dto.entitlements.QEntitlementSource
 import com.qonversion.android.sdk.dto.experiments.QExperiment
+import com.qonversion.android.sdk.dto.properties.QUserPropertyKey
 import com.qonversion.android.sdk.listeners.QDeferredPurchasesListener
 import com.qonversion.android.sdk.listeners.QonversionEntitlementsCallback
 import com.qonversion.android.sdk.listeners.QonversionRemoteConfigCallback
@@ -445,6 +446,67 @@ object DioxusQonversionHost {
             } catch (t: Throwable) {
                 t.message ?: t.toString()
             }
+        }
+    }
+
+    /**
+     * Set a Qonversion-defined user property.
+     *
+     * [key] is the Rust host key (e.g. `"email"`). Hops to the main looper and **waits**.
+     *
+     * @return `null` on success, or an error description on failure.
+     */
+    @JvmStatic
+    fun setUserProperty(key: String, value: String, timeoutMs: Long): String? {
+        val propertyKey = definedUserPropertyKey(key)
+            ?: return "unknown user property key: $key"
+        return runOnMainSync(timeoutMs) {
+            try {
+                Qonversion.shared.setUserProperty(propertyKey, value)
+                null
+            } catch (t: Throwable) {
+                t.message ?: t.toString()
+            }
+        }
+    }
+
+    /**
+     * Set a custom user property.
+     *
+     * Hops to the main looper and **waits**.
+     *
+     * @return `null` on success, or an error description on failure.
+     */
+    @JvmStatic
+    fun setCustomUserProperty(key: String, value: String, timeoutMs: Long): String? {
+        return runOnMainSync(timeoutMs) {
+            try {
+                Qonversion.shared.setCustomUserProperty(key, value)
+                null
+            } catch (t: Throwable) {
+                t.message ?: t.toString()
+            }
+        }
+    }
+
+    private fun definedUserPropertyKey(key: String): QUserPropertyKey? {
+        return when (key) {
+            "email" -> QUserPropertyKey.Email
+            "name" -> QUserPropertyKey.Name
+            "kochava_device_id" -> QUserPropertyKey.KochavaDeviceId
+            "appsflyer_user_id" -> QUserPropertyKey.AppsFlyerUserId
+            "adjust_ad_id" -> QUserPropertyKey.AdjustAdId
+            "custom_user_id" -> QUserPropertyKey.CustomUserId
+            "facebook_attribution" -> QUserPropertyKey.FacebookAttribution
+            "firebase_app_instance_id" -> QUserPropertyKey.FirebaseAppInstanceId
+            "app_set_id" -> QUserPropertyKey.AppSetId
+            "advertising_id" -> QUserPropertyKey.AdvertisingId
+            "pushwoosh_user_id" -> QUserPropertyKey.PushWooshUserId
+            "pushwoosh_hw_id" -> QUserPropertyKey.PushWooshHwId
+            "appmetrica_device_id" -> QUserPropertyKey.AppMetricaDeviceId
+            "appmetrica_user_profile_id" -> QUserPropertyKey.AppMetricaUserProfileId
+            "tenjin_analytics_installation_id" -> QUserPropertyKey.TenjinAnalyticsInstallationId
+            else -> null
         }
     }
 
