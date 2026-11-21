@@ -35,10 +35,6 @@ pub(crate) fn restore() -> Result<String, QonversionError> {
     Err(QonversionError::UnsupportedPlatform)
 }
 
-pub(crate) fn has_current_subscription() -> Result<bool, QonversionError> {
-    Err(QonversionError::UnsupportedPlatform)
-}
-
 pub(crate) fn is_main_thread() -> bool {
     false
 }

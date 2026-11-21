@@ -28,6 +28,21 @@ pub struct Entitlement {
     pub renew_state: EntitlementRenewState,
     /// Store or grant source that activated this entitlement.
     pub source: EntitlementSource,
+    /// Store transactions Qonversion recorded for this entitlement.
+    /// Empty when the host omits the list. A transaction id is not a purchase token.
+    pub transactions: Vec<EntitlementTransaction>,
+}
+
+/// One store transaction on a Qonversion entitlement.
+///
+/// `transaction_id` and `original_transaction_id` come from the store via
+/// Qonversion. There is no Play purchase token on this object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntitlementTransaction {
+    pub transaction_id: String,
+    pub original_transaction_id: String,
+    /// Milliseconds since Unix epoch when the store revoked the transaction.
+    pub revocation_date: Option<i64>,
 }
 
 /// Renewal state from the official Entitlement object.
@@ -79,21 +94,6 @@ pub fn restore() -> Result<HashMap<String, Entitlement>, QonversionError> {
 /// [`restore`] for Dioxus `spawn`. See [`crate::remote_config_async`].
 pub async fn restore_async() -> Result<HashMap<String, Entitlement>, QonversionError> {
     entitlements_from_async(native::restore).await
-}
-
-/// True when this phone's store account has a current subscription receipt.
-///
-/// StoreKit `Transaction.currentEntitlements` on iOS, Play Billing subscription
-/// purchases on Android. This is not Qonversion's entitlement `source`.
-/// Same queue as [`check_entitlements`]. On iOS, await
-/// [`has_current_subscription_async`] from Dioxus `spawn`.
-pub fn has_current_subscription() -> Result<bool, QonversionError> {
-    queue::run_serial(native::has_current_subscription)
-}
-
-/// [`has_current_subscription`] for Dioxus `spawn`.
-pub async fn has_current_subscription_async() -> Result<bool, QonversionError> {
-    queue::run_serial_async(native::has_current_subscription).await
 }
 
 fn entitlements_from(
@@ -151,7 +151,34 @@ fn parse_entitlement(value: &Value, id: &str) -> Result<Entitlement, QonversionE
         expiration_date: object.get("expiration_date").and_then(Value::as_i64),
         renew_state: parse_renew_state(object.get("renew_state").and_then(Value::as_str)),
         source: parse_source(object.get("source").and_then(Value::as_str)),
+        transactions: parse_transactions(object.get("transactions")),
     })
+}
+
+fn parse_transactions(value: Option<&Value>) -> Vec<EntitlementTransaction> {
+    let Some(Value::Array(rows)) = value else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let object = row.as_object()?;
+            Some(EntitlementTransaction {
+                transaction_id: object
+                    .get("transaction_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                original_transaction_id: object
+                    .get("original_transaction_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                revocation_date: object.get("revocation_date").and_then(Value::as_i64),
+            })
+        })
+        .collect()
 }
 
 fn parse_renew_state(raw: Option<&str>) -> EntitlementRenewState {
@@ -206,6 +233,7 @@ mod tests {
                 expiration_date: Some(1_700_000_000_000),
                 renew_state: EntitlementRenewState::WillRenew,
                 source: EntitlementSource::AppStore,
+                transactions: vec![],
             },
         );
         assert_eq!(
@@ -236,6 +264,7 @@ mod tests {
                 expiration_date: None,
                 renew_state: EntitlementRenewState::Canceled,
                 source: EntitlementSource::PlayStore,
+                transactions: vec![],
             },
         );
         assert_eq!(

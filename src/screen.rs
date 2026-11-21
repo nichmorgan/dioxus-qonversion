@@ -464,6 +464,7 @@ mod tests {
                 expiration_date: None,
                 renew_state: crate::EntitlementRenewState::Unknown,
                 source: crate::EntitlementSource::Unknown,
+                transactions: vec![],
             },
         );
         dispatch_entitlements_updated(active.clone());

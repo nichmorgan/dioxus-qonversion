@@ -1,5 +1,4 @@
 import Foundation
-import StoreKit
 import Qonversion
 import NoCodes
 
@@ -203,32 +202,6 @@ public class DioxusQonversionHost: NSObject {
         }
     }
 
-    /// True when StoreKit has a verified auto-renewable subscription for this Apple ID.
-    ///
-    /// Qonversion's entitlement source is not this receipt. Must not run on the main thread.
-    @objc(hasCurrentSubscription)
-    public static func hasCurrentSubscription() -> Bool {
-        if Thread.isMainThread {
-            return false
-        }
-        let flag = SubscriptionFlag()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            for await result in Transaction.currentEntitlements {
-                guard case .verified(let transaction) = result else {
-                    continue
-                }
-                if transaction.productType == .autoRenewable && transaction.revocationDate == nil {
-                    flag.mark()
-                    break
-                }
-            }
-            semaphore.signal()
-        }
-        _ = semaphore.wait(timeout: .now() + 8)
-        return flag.isSet()
-    }
-
     /// Return the current entitlement map as a JSON envelope.
     ///
     /// Posts to the main queue and **waits**. Must not be invoked on the main thread.
@@ -390,6 +363,18 @@ public class DioxusQonversionHost: NSObject {
             "product_id": productId.isEmpty ? NSNull() : productId,
             "renew_state": renewStateString(entitlement.renewState),
             "source": entitlementSourceString(entitlement.source),
+            "transactions": entitlement.transactions.map { transaction -> [String: Any] in
+                var row: [String: Any] = [
+                    "transaction_id": transaction.transactionId,
+                    "original_transaction_id": transaction.originalTransactionId,
+                ]
+                if let revoked = transaction.transactionRevocationDate {
+                    row["revocation_date"] = Int64((revoked.timeIntervalSince1970 * 1000.0).rounded())
+                } else {
+                    row["revocation_date"] = NSNull()
+                }
+                return row
+            },
         ]
         if let expiration = entitlement.expirationDate {
             obj["expiration_date"] = Int64((expiration.timeIntervalSince1970 * 1000.0).rounded())
@@ -559,23 +544,6 @@ private func stringifyJson(_ dict: [String: Any]) -> String? {
         return nil
     }
     return string
-}
-
-private final class SubscriptionFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    func mark() {
-        lock.lock()
-        value = true
-        lock.unlock()
-    }
-
-    func isSet() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
-    }
 }
 
 /// Forwards a deferred purchase (Ask to Buy, Play pending) as an entitlements envelope.

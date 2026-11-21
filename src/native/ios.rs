@@ -138,14 +138,6 @@ pub(crate) fn restore() -> Result<String, QonversionError> {
     })
 }
 
-pub(crate) fn has_current_subscription() -> Result<bool, QonversionError> {
-    autoreleasepool(|| {
-        let host = host_class()?;
-        let value: BOOL = unsafe { msg_send![host, hasCurrentSubscription] };
-        Ok(value != NO)
-    })
-}
-
 pub(crate) fn is_main_thread() -> bool {
     extern "C" {
         fn pthread_main_np() -> i32;
