@@ -1,4 +1,5 @@
 import Foundation
+import StoreKit
 import Qonversion
 import NoCodes
 
@@ -200,6 +201,32 @@ public class DioxusQonversionHost: NSObject {
                 Qonversion.shared().remoteConfig(handler)
             }
         }
+    }
+
+    /// True when StoreKit has a verified auto-renewable subscription for this Apple ID.
+    ///
+    /// Qonversion's entitlement source is not this receipt. Must not run on the main thread.
+    @objc(hasCurrentSubscription)
+    public static func hasCurrentSubscription() -> Bool {
+        if Thread.isMainThread {
+            return false
+        }
+        let flag = SubscriptionFlag()
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            for await result in Transaction.currentEntitlements {
+                guard case .verified(let transaction) = result else {
+                    continue
+                }
+                if transaction.productType == .autoRenewable && transaction.revocationDate == nil {
+                    flag.mark()
+                    break
+                }
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 8)
+        return flag.isSet()
     }
 
     /// Return the current entitlement map as a JSON envelope.
@@ -532,6 +559,23 @@ private func stringifyJson(_ dict: [String: Any]) -> String? {
         return nil
     }
     return string
+}
+
+private final class SubscriptionFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func mark() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    func isSet() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
 }
 
 /// Forwards a deferred purchase (Ask to Buy, Play pending) as an entitlements envelope.

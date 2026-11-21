@@ -81,6 +81,21 @@ pub async fn restore_async() -> Result<HashMap<String, Entitlement>, QonversionE
     entitlements_from_async(native::restore).await
 }
 
+/// True when this phone's store account has a current subscription receipt.
+///
+/// StoreKit `Transaction.currentEntitlements` on iOS, Play Billing subscription
+/// purchases on Android. This is not Qonversion's entitlement `source`.
+/// Same queue as [`check_entitlements`]. On iOS, await
+/// [`has_current_subscription_async`] from Dioxus `spawn`.
+pub fn has_current_subscription() -> Result<bool, QonversionError> {
+    queue::run_serial(native::has_current_subscription)
+}
+
+/// [`has_current_subscription`] for Dioxus `spawn`.
+pub async fn has_current_subscription_async() -> Result<bool, QonversionError> {
+    queue::run_serial_async(native::has_current_subscription).await
+}
+
 fn entitlements_from(
     native: impl FnOnce() -> Result<String, QonversionError> + Send + 'static,
 ) -> Result<HashMap<String, Entitlement>, QonversionError> {

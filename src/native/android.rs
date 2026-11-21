@@ -238,6 +238,27 @@ pub(crate) fn restore() -> Result<String, QonversionError> {
     host_timeout_envelope(jni_str!("restore"), "DioxusQonversionHost.restore")
 }
 
+pub(crate) fn has_current_subscription() -> Result<bool, QonversionError> {
+    let (vm, context_raw) = java_vm_and_context()?;
+    vm.attach_current_thread(|env| {
+        let context = unsafe { JObject::from_raw(env, context_raw) };
+        let host = find_host_class(env, &context)?;
+        env.call_static_method(
+            host,
+            jni_str!("hasCurrentSubscription"),
+            jni_sig!("(Landroid/content/Context;)Z"),
+            &[JValue::Object(&context)],
+        )
+        .map_err(|e| map_exception(env, e, "DioxusQonversionHost.hasCurrentSubscription"))?
+        .z()
+        .map_err(|e| QonversionError::Native {
+            message: format!(
+                "DioxusQonversionHost.hasCurrentSubscription returned unexpected type: {e}"
+            ),
+        })
+    })
+}
+
 pub(crate) fn is_main_thread() -> bool {
     let Ok((vm, _)) = java_vm_and_context() else {
         return false;

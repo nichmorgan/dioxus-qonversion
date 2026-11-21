@@ -9,6 +9,8 @@ import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.PendingPurchasesParams
+import com.android.billingclient.api.Purchase
+import com.android.billingclient.api.QueryPurchasesParams
 import com.qonversion.android.sdk.Qonversion
 import com.qonversion.android.sdk.QonversionConfig
 import com.qonversion.android.sdk.dto.QEnvironment
@@ -403,6 +405,93 @@ object DioxusQonversionHost {
                 complete(encodeEnvelopeError(t.message ?: t.toString()))
             }
         }
+    }
+
+    /**
+     * True when Play Billing has a purchased subscription on this account.
+     *
+     * Qonversion's entitlement source is not this receipt. Must not run on the main looper.
+     */
+    @JvmStatic
+    fun hasCurrentSubscription(context: Context): Boolean {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return false
+        }
+        if (!isPlayStoreInstalled(context)) {
+            return false
+        }
+        val latch = CountDownLatch(1)
+        val found = AtomicBoolean(false)
+        val finished = AtomicBoolean(false)
+        val clientRef = AtomicReference<BillingClient?>(null)
+        val appContext = context.applicationContext
+        Handler(Looper.getMainLooper()).post {
+            if (finished.get()) {
+                return@post
+            }
+            try {
+                val billingClient = BillingClient.newBuilder(appContext)
+                    .setListener { _, _ -> }
+                    .enablePendingPurchases(
+                        PendingPurchasesParams.newBuilder().enableOneTimeProducts().build(),
+                    )
+                    .build()
+                if (finished.get()) {
+                    endBillingClient(billingClient)
+                    return@post
+                }
+                clientRef.set(billingClient)
+                billingClient.startConnection(object : BillingClientStateListener {
+                    override fun onBillingSetupFinished(billingResult: BillingResult) {
+                        if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
+                            finishSubscriptionProbe(clientRef, found, finished, latch, false)
+                            return
+                        }
+                        val params = QueryPurchasesParams.newBuilder()
+                            .setProductType(BillingClient.ProductType.SUBS)
+                            .build()
+                        billingClient.queryPurchasesAsync(params) { result, purchases ->
+                            val active = result.responseCode == BillingClient.BillingResponseCode.OK &&
+                                purchases.any { purchase ->
+                                    purchase.purchaseState == Purchase.PurchaseState.PURCHASED
+                                }
+                            finishSubscriptionProbe(clientRef, found, finished, latch, active)
+                        }
+                    }
+
+                    override fun onBillingServiceDisconnected() {
+                        finishSubscriptionProbe(clientRef, found, finished, latch, false)
+                    }
+                })
+            } catch (t: Throwable) {
+                android.util.Log.e(
+                    "DioxusQonversion",
+                    "hasCurrentSubscription failed: ${t.message}",
+                    t,
+                )
+                finishSubscriptionProbe(clientRef, found, finished, latch, false)
+            }
+        }
+        if (!latch.await(STORE_PREFLIGHT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            finishSubscriptionProbe(clientRef, found, finished, latch, false)
+            return false
+        }
+        return found.get()
+    }
+
+    private fun finishSubscriptionProbe(
+        clientRef: AtomicReference<BillingClient?>,
+        found: AtomicBoolean,
+        finished: AtomicBoolean,
+        latch: CountDownLatch,
+        active: Boolean,
+    ) {
+        if (!finished.compareAndSet(false, true)) {
+            return
+        }
+        found.set(active)
+        endBillingClient(clientRef.getAndSet(null))
+        latch.countDown()
     }
 
     /**

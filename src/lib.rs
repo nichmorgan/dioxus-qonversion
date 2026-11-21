@@ -22,8 +22,9 @@ mod screen;
 
 pub use config::{Environment, InitConfig, LaunchMode};
 pub use entitlements::{
-    check_entitlements, check_entitlements_async, restore, restore_async, Entitlement,
-    EntitlementRenewState, EntitlementSource,
+    check_entitlements, check_entitlements_async, has_current_subscription,
+    has_current_subscription_async, restore, restore_async, Entitlement, EntitlementRenewState,
+    EntitlementSource,
 };
 pub use error::QonversionError;
 pub use identity::{identify, identify_async, logout, logout_async};
@@ -48,7 +49,8 @@ pub use screen::{
 pub mod prelude {
     pub use crate::{
         check_entitlements, check_entitlements_async, clear_entitlements_updated_handler,
-        clear_screen_event_handler, clear_screen_failed_handler, identify, identify_async,
+        clear_screen_event_handler, clear_screen_failed_handler, has_current_subscription,
+        has_current_subscription_async, identify, identify_async,
         initialize, is_initialized, load_screen, load_screen_async, logout, logout_async,
         remote_config, remote_config_async, remote_config_default, remote_config_default_async,
         restore, restore_async, sdk_timeout, set_entitlements_updated_handler,
@@ -320,6 +322,17 @@ mod tests {
         init::mark_initialized_for_test();
         let err =
             queue::off_main(remote_config_default).expect_err("must fail without a native host");
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        assert_eq!(err, QonversionError::UnsupportedPlatform);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        assert!(matches!(err, QonversionError::HostMissing(_)));
+    }
+
+    #[test]
+    fn has_current_subscription_fails_without_native_runtime() {
+        let _guard = queue::test_lock();
+        let err = queue::off_main(has_current_subscription)
+            .expect_err("must fail without a native host");
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         assert_eq!(err, QonversionError::UnsupportedPlatform);
         #[cfg(any(target_os = "android", target_os = "ios"))]

@@ -64,6 +64,11 @@ pub(crate) fn restore() -> Result<String, QonversionError> {
     sys::restore()
 }
 
+/// True when this phone's store has a current auto-renewable subscription receipt.
+pub(crate) fn has_current_subscription() -> Result<bool, QonversionError> {
+    sys::has_current_subscription()
+}
+
 #[cfg(test)]
 static SIMULATE_MAIN_THREAD: AtomicBool = AtomicBool::new(false);
 
